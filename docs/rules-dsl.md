@@ -57,6 +57,68 @@ Running this program to fixpoint derives six `ancestor/2` facts.
 - **Built-ins** (equality, comparison, string ops) — Phase 1, implemented as
   sandboxed Rust functions registered into the evaluator.
 
+## CSM fact schema (Phase 1 step 1)
+
+When you call `workspace.index`, language analyzers lower every parsed source
+file into a `CsmFragment`, which is then flattened to graph facts. The
+predicates below form the **stable surface** that rule packs are written
+against.
+
+### Entities (arity 2: `kind(id, name)`)
+
+| Predicate | Entity kind |
+|---|---|
+| `module` | `ModuleId, Name` |
+| `package` | `PackageId, Name` |
+| `file` | `FileId, Name` |
+| `function` | `FunctionId, Name` |
+| `type_def` | `TypeId, Name` |
+| `trait_def` | `TraitId, Name` |
+| `struct_def` | `StructId, Name` |
+| `field` | `FieldId, Name` |
+| `variable` | `VariableId, Name` |
+| `macro_def` | `MacroId, Name` |
+
+### Relations (arity 2: `kind(subject, object)`)
+
+| Predicate | Meaning |
+|---|---|
+| `defines` | subject defines object |
+| `declares` | subject declares object |
+| `contains` | subject lexically contains object |
+| `references` | subject references object |
+| `calls` | subject (a function body) calls object |
+| `implements` | type subject implements trait object |
+| `extends` | subject extends object |
+| `imports` | subject imports object |
+| `depends_on` | subject depends on object |
+
+### Auxiliary
+
+| Predicate | Meaning |
+|---|---|
+| `ref_name(RefId, Name)` | the bare name carried by a synthetic reference id, so rules can join references back to entities without string manipulation |
+
+Reference ids follow the convention `{file}#ref:{Name}`. Until the
+type-aware analyzer lands, all call / impl / import targets are syntactic
+references — rules typically resolve them by matching on `ref_name`.
+
+### Example — recursion detection
+
+```prolog
+target_named(Ref, Name) :- function(Ref, Name).
+
+resolved_call(Caller, Callee) :-
+    calls(Caller, Ref),
+    ref_name(Ref, Name),
+    function(Callee, Name).
+
+reaches(A, B) :- resolved_call(A, B).
+reaches(A, C) :- resolved_call(A, B), reaches(B, C).
+
+recursive(F) :- reaches(F, F).
+```
+
 ## Non-goals
 
 - No higher-order syntax. No `findall`, no meta-call.

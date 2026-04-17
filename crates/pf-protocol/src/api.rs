@@ -35,6 +35,7 @@ pub struct ServerCapabilities {
 
 pub const METHOD_WORKSPACE_OPEN: &str = "workspace.open";
 pub const METHOD_WORKSPACE_STATUS: &str = "workspace.status";
+pub const METHOD_WORKSPACE_INDEX: &str = "workspace.index";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceOpenParams {
@@ -56,6 +57,27 @@ pub struct WorkspaceStatus {
     pub fact_count: usize,
     pub rule_count: usize,
     pub derived_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceIndexParams {
+    pub workspace_id: WorkspaceId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceIndexResult {
+    pub files_indexed: usize,
+    pub files_failed: usize,
+    pub entities: usize,
+    pub relations: usize,
+    pub facts_inserted: usize,
+    pub errors: Vec<IndexingError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexingError {
+    pub file: String,
+    pub message: String,
 }
 
 // ---------- graph ----------------------------------------------------------

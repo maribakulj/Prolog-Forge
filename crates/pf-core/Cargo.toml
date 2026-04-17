@@ -15,3 +15,5 @@ pf-graph.workspace = true
 pf-rules.workspace = true
 pf-persist.workspace = true
 pf-csm.workspace = true
+pf-ingest.workspace = true
+pf-lang-rust.workspace = true

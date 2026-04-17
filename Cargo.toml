@@ -6,6 +6,8 @@ members = [
     "crates/pf-graph",
     "crates/pf-rules",
     "crates/pf-persist",
+    "crates/pf-ingest",
+    "crates/pf-lang-rust",
     "crates/pf-core",
     "crates/pf-daemon",
     "crates/pf-cli",
@@ -34,6 +36,8 @@ pf-csm = { path = "crates/pf-csm" }
 pf-graph = { path = "crates/pf-graph" }
 pf-rules = { path = "crates/pf-rules" }
 pf-persist = { path = "crates/pf-persist" }
+pf-ingest = { path = "crates/pf-ingest" }
+pf-lang-rust = { path = "crates/pf-lang-rust" }
 pf-core = { path = "crates/pf-core" }
 
 [profile.release]

@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.1.0` (Phase 0, pre-stable).
+**Version:** `0.2.0` (Phase 1 step 1, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -31,13 +31,14 @@ methods or optional fields. Clients send their own name/version during
 of supported methods. Capability negotiation (for optional features) is
 server-driven from that list.
 
-## Methods — Phase 0
+## Methods — current surface
 
 | Method | Purpose |
 |---|---|
 | `session.initialize` | Handshake; returns `ServerCapabilities`. |
 | `session.shutdown` | Terminate the daemon cleanly. |
 | `workspace.open` | Register a workspace root; returns a `WorkspaceId`. |
+| `workspace.index` | Walk the workspace, analyze every supported source file, emit observed facts. |
 | `workspace.status` | Counts of facts / rules / derived facts. |
 | `graph.ingestFact` | Insert facts into the knowledge graph. |
 | `graph.query` | Pattern-match one atom against the graph. |

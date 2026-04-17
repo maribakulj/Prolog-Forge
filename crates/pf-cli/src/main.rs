@@ -18,8 +18,9 @@ use pf_core::{dispatch, Core};
 use pf_protocol::{
     Id, IngestFactParams, InitializeParams, QueryParams, QueryResult, Request, Response,
     RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
-    WorkspaceId, WorkspaceOpenParams, WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
-    METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_OPEN,
+    WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
+    WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_RULES_EVALUATE,
+    METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX, METHOD_WORKSPACE_OPEN,
 };
 use serde_json::{json, Value};
 
@@ -45,6 +46,18 @@ enum Cmd {
         /// A single Datalog atom, e.g. `ancestor(X, Y)`.
         pattern: String,
     },
+    /// Index a Rust project into the knowledge graph; optionally load a rule
+    /// pack, evaluate it, and run a query against the resulting graph.
+    Index {
+        /// Workspace root to index.
+        root: PathBuf,
+        /// Optional `.pfr` rule pack to load before evaluation.
+        #[arg(long)]
+        rules: Option<PathBuf>,
+        /// Optional query pattern to run after evaluation.
+        #[arg(long)]
+        query: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -54,7 +67,76 @@ fn main() -> Result<()> {
         Cmd::Check { file } => cmd_check(file),
         Cmd::Run { file } => cmd_run(file),
         Cmd::Query { file, pattern } => cmd_query(file, pattern),
+        Cmd::Index { root, rules, query } => cmd_index(root, rules, query),
     }
+}
+
+fn cmd_index(root: PathBuf, rules: Option<PathBuf>, query: Option<String>) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let open: WorkspaceOpenResult = serde_json::from_value(resp)?;
+    let ws = open.workspace_id;
+
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_INDEX,
+        serde_json::to_value(WorkspaceIndexParams {
+            workspace_id: ws.clone(),
+        })?,
+    )?;
+    let report: WorkspaceIndexResult = serde_json::from_value(resp)?;
+    println!(
+        "indexed: {} file(s), {} entity(ies), {} relation(s), {} fact(s); failed: {}",
+        report.files_indexed,
+        report.entities,
+        report.relations,
+        report.facts_inserted,
+        report.files_failed
+    );
+    for e in &report.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+
+    if let Some(rules_path) = rules {
+        let src = fs::read_to_string(&rules_path)
+            .with_context(|| format!("reading {}", rules_path.display()))?;
+        let _ = call(
+            &core,
+            METHOD_RULES_LOAD,
+            serde_json::to_value(RulesLoadParams {
+                workspace_id: ws.clone(),
+                source: src,
+            })?,
+        )?;
+        let stats = eval(&core, &ws)?;
+        println!(
+            "rule eval: derived {} fact(s) in {} iteration(s)",
+            stats.derived, stats.iterations
+        );
+    }
+
+    if let Some(pattern) = query {
+        let resp = call(
+            &core,
+            METHOD_GRAPH_QUERY,
+            serde_json::to_value(QueryParams {
+                workspace_id: ws,
+                pattern,
+            })?,
+        )?;
+        let qr: QueryResult = serde_json::from_value(resp)?;
+        println!("query: {} result(s)", qr.count);
+        for b in qr.bindings {
+            println!("  {}", b);
+        }
+    }
+    Ok(())
 }
 
 fn cmd_info() -> Result<()> {

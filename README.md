@@ -11,10 +11,12 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 0 (foundations)** — the rule engine, graph store, protocol,
-> daemon, and reference CLI are implemented and tested end-to-end. Language
-> analyzers, LLM orchestration, and patch planning land in the phases that
-> follow. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 1** — Phase 0 foundations shipped, plus a working
+> Rust analyzer (syn-based) and an end-to-end indexing pipeline. Running
+> `pf index <rust-project> --rules pack.pfr --query 'recursive(F)'` extracts
+> facts from real source, runs the rule engine, and answers queries.
+> LLM orchestration, patch planning, and validation land in the following
+> steps. See [Roadmap](#roadmap).
 
 ---
 
@@ -61,13 +63,13 @@ Phase 0 implements `observed` and `inferred` end-to-end.
 
 ```
  adapters ──► JSON-RPC (stdio) ──► Core
-                                    ├── ingestion       (Phase 1)
+                                    ├── ingestion       (Phase 1.1 ✓, Rust)
                                     ├── CSM             (v0 shipped)
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
-                                    ├── LLM orchestrator (Phase 1)
-                                    ├── patch planner    (Phase 1)
-                                    ├── validator        (Phase 1)
+                                    ├── LLM orchestrator (Phase 1.2)
+                                    ├── patch planner    (Phase 1.3)
+                                    ├── validator        (Phase 1.4)
                                     └── explainer        (Phase 2)
 ```
 
@@ -81,7 +83,9 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-graph`](crates/pf-graph) | In-memory knowledge graph (facts, layers, pattern matching) |
 | [`pf-rules`](crates/pf-rules) | Datalog-v1 parser + evaluator |
 | [`pf-persist`](crates/pf-persist) | KV trait + in-memory backend |
-| [`pf-core`](crates/pf-core) | Session manager + API dispatcher |
+| [`pf-ingest`](crates/pf-ingest) | Filesystem walker and source dispatch |
+| [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
+| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
@@ -132,6 +136,23 @@ $ pf query family.pfr 'ancestor(alice, X)'
   {"X":"dan"}
 ```
 
+### Index a real Rust project
+
+```bash
+$ pf index examples/rust-demo \
+    --rules examples/rust-demo/rules.pfr \
+    --query 'recursive(F)'
+indexed: 1 file(s), 9 entity(ies), 21 relation(s), 34 fact(s); failed: 0
+rule eval: derived 23 fact(s) in 4 iteration(s)
+query: 1 result(s)
+  {"F":"src/lib.rs#fn:countdown@src/lib.rs#file"}
+```
+
+The indexer lowers each `.rs` file to CSM via `syn`, flattens entities and
+relations into graph facts (`function/2`, `calls/2`, `implements/2`, …), and
+makes them queryable through the same Datalog surface used by ad-hoc rule
+files. Fact schema: [`docs/rules-dsl.md`](docs/rules-dsl.md).
+
 ### Talk to the daemon
 
 The daemon speaks JSON-RPC 2.0 with LSP-style `Content-Length` framing on
@@ -152,6 +173,7 @@ CI and is the minimal reference client.
 | `session.initialize` | Handshake, returns server capabilities. |
 | `session.shutdown` | Terminate cleanly. |
 | `workspace.open` | Register a workspace root. |
+| `workspace.index` | Walk the workspace, analyze every supported source file, emit observed facts. |
 | `workspace.status` | Counts of facts, rules, derived. |
 | `graph.ingestFact` | Insert facts programmatically. |
 | `graph.query` | Pattern-match an atom against the graph. |
@@ -225,7 +247,8 @@ touching any Phase 0 artifact beyond the API enum.
 | Phase | Scope | Approx. horizon |
 |---|---|---|
 | **0** | Contracts, JSON-RPC, CSM v0, graph, Datalog v1, CLI, CI | **shipped** |
-| 1 (MVP) | Rust analyzer, LLM orchestrator, patch + validation loop, VS Code adapter minimal | 2–5 months |
+| **1.1** | `pf-ingest`, `pf-lang-rust`, `workspace.index`, CSM→fact lowering, real-project demo | **shipped** |
+| 1.2–1.4 (MVP rest) | LLM orchestrator, patch planner, validation pipeline, VS Code adapter minimal | 2–5 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

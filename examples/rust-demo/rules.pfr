@@ -1,0 +1,34 @@
+% Minimal rule pack exercising the Phase 1 step-1 fact schema.
+%
+% The indexer emits facts such as:
+%   function(FunctionId, Name).
+%   struct_def(StructId, Name).
+%   trait_def(TraitId, Name).
+%   calls(CallerId, TargetRefId).
+%   contains(ParentId, ChildId).
+%   implements(TypeRefId, TraitRefId).
+%
+% Target references are syntactic (no resolver yet), so we link a call to a
+% known function by matching names through `target_named/2`.
+
+% A call where both caller and target are known functions defined in the
+% indexed codebase.
+target_named(Ref, Name) :- function(Ref, Name).
+target_named(Ref, Name) :- struct_def(Ref, Name).
+
+resolved_call(Caller, Callee) :-
+    calls(Caller, TargetRef),
+    ref_name(TargetRef, Name),
+    function(Callee, Name).
+
+% A syntactic `#ref:Name` id carries the name after the `:`. Here we just
+% expose the fact schema for documentation — resolver logic lands with the
+% type-aware analyzer.
+ref_name(Ref, Ref) :- function(Ref, _).
+
+% Transitive reachability through resolved calls.
+reaches(A, B) :- resolved_call(A, B).
+reaches(A, C) :- resolved_call(A, B), reaches(B, C).
+
+% A function is (syntactically) recursive if it reaches itself.
+recursive(F) :- reaches(F, F).

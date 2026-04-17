@@ -97,7 +97,43 @@ def main() -> int:
         xs = sorted(b["X"] for b in q["bindings"])
         assert xs == ["bob", "carol", "dan"], xs
 
-        send(proc, {"jsonrpc": "2.0", "id": 6, "method": "session.shutdown"})
+        # ---- workspace.index against the Rust fixture --------------------
+        send(proc, {
+            "jsonrpc": "2.0", "id": 6, "method": "workspace.open",
+            "params": {"root": os.path.abspath("examples/rust-demo")},
+        })
+        ws2 = recv(proc)["result"]["workspace_id"]
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 7, "method": "workspace.index",
+            "params": {"workspace_id": ws2},
+        })
+        idx = recv(proc)["result"]
+        assert idx["files_indexed"] >= 1, idx
+        assert idx["files_failed"] == 0, idx
+        assert idx["facts_inserted"] > 0, idx
+
+        with open("examples/rust-demo/rules.pfr") as f:
+            rules_src = f.read()
+        send(proc, {
+            "jsonrpc": "2.0", "id": 8, "method": "rules.load",
+            "params": {"workspace_id": ws2, "source": rules_src},
+        })
+        recv(proc)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 9, "method": "rules.evaluate",
+            "params": {"workspace_id": ws2},
+        })
+        recv(proc)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 10, "method": "graph.query",
+            "params": {"workspace_id": ws2, "pattern": "recursive(F)"},
+        })
+        rec = recv(proc)["result"]
+        assert rec["count"] == 1, rec
+        assert "countdown" in rec["bindings"][0]["F"], rec
+
+        send(proc, {"jsonrpc": "2.0", "id": 11, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")

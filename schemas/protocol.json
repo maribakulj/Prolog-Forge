@@ -63,6 +63,38 @@
         "properties": { "workspace_id": { "$ref": "#/$defs/WorkspaceId" } }
       }
     },
+    "workspace.index": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id"],
+        "properties": { "workspace_id": { "$ref": "#/$defs/WorkspaceId" } }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "files_indexed", "files_failed", "entities", "relations",
+          "facts_inserted", "errors"
+        ],
+        "properties": {
+          "files_indexed": { "type": "integer", "minimum": 0 },
+          "files_failed": { "type": "integer", "minimum": 0 },
+          "entities": { "type": "integer", "minimum": 0 },
+          "relations": { "type": "integer", "minimum": 0 },
+          "facts_inserted": { "type": "integer", "minimum": 0 },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["file", "message"],
+              "properties": {
+                "file": { "type": "string" },
+                "message": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
     "workspace.status": {
       "params": {
         "type": "object",

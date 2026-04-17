@@ -14,6 +14,7 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_SHUTDOWN => Ok(json!(null)),
         METHOD_WORKSPACE_OPEN => handle_open(core, params),
         METHOD_WORKSPACE_STATUS => handle_status(core, params),
+        METHOD_WORKSPACE_INDEX => handle_index(core, params),
         METHOD_GRAPH_INGEST => handle_ingest(core, params),
         METHOD_GRAPH_QUERY => handle_query(core, params),
         METHOD_RULES_LOAD => handle_rules_load(core, params),
@@ -37,6 +38,7 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_SHUTDOWN.into(),
             METHOD_WORKSPACE_OPEN.into(),
             METHOD_WORKSPACE_STATUS.into(),
+            METHOD_WORKSPACE_INDEX.into(),
             METHOD_GRAPH_INGEST.into(),
             METHOD_GRAPH_QUERY.into(),
             METHOD_RULES_LOAD.into(),
@@ -50,6 +52,24 @@ fn handle_open(core: &Core, params: Value) -> Result<Value, RpcError> {
     let p: WorkspaceOpenParams = decode(params)?;
     let id = core.open(p.root);
     Ok(serde_json::to_value(WorkspaceOpenResult { workspace_id: id }).unwrap())
+}
+
+fn handle_index(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: WorkspaceIndexParams = decode(params)?;
+    let report = core
+        .with_workspace(&p.workspace_id, |ws, st| {
+            crate::index::index_workspace(&ws.root, &mut st.graph)
+        })
+        .map_err(RpcError::invalid_params)?;
+    Ok(serde_json::to_value(WorkspaceIndexResult {
+        files_indexed: report.files_indexed,
+        files_failed: report.files_failed,
+        entities: report.entities,
+        relations: report.relations,
+        facts_inserted: report.facts_inserted,
+        errors: report.errors,
+    })
+    .unwrap())
 }
 
 fn handle_status(core: &Core, params: Value) -> Result<Value, RpcError> {

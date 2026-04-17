@@ -66,10 +66,24 @@ pub struct Relation {
 }
 
 /// A complete CSM fragment emitted by one analyzer for one source unit.
+///
+/// `aux_facts` is an escape hatch for language-specific observations that do
+/// not fit the entity/relation schema yet (e.g. the bare name associated with
+/// a synthetic reference id). They lower straight into graph facts at the
+/// `observed` layer. Useful sparingly; do not abuse — if a family of aux
+/// facts becomes stable, promote it to a first-class `RelationKind`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CsmFragment {
     pub entities: Vec<Entity>,
     pub relations: Vec<Relation>,
+    #[serde(default)]
+    pub aux_facts: Vec<AuxFact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuxFact {
+    pub predicate: String,
+    pub args: Vec<String>,
 }
 
 /// Trait every language analyzer must implement. Not used yet in Phase 0,

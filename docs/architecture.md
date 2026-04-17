@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 0
+## Current state — Phase 1 step 1 (Rust ingestion landed)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -17,8 +17,10 @@ JSON-RPC.
 | `pf-csm` | Common Semantic Model v0 (minimal entity/relation types + `LanguageAnalyzer` trait). |
 | `pf-graph` | In-memory knowledge graph — n-ary facts, layers, pattern matching. |
 | `pf-rules` | Datalog-v1 engine — hand-rolled parser, naive bottom-up evaluator. |
-| `pf-persist` | KV trait + in-memory backend. Disk-backed store lands in Phase 1. |
-| `pf-core` | Session/workspace manager, API dispatcher (`dispatch`). |
+| `pf-persist` | KV trait + in-memory backend. Disk-backed store lands in Phase 1 step 2. |
+| `pf-ingest` | Filesystem walker, source-file dispatch. |
+| `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
+| `pf-core` | Session/workspace manager, API dispatcher (`dispatch`), CSM→fact lowering, `workspace.index` pipeline. |
 | `pf-daemon` | Binary: stdio JSON-RPC server wrapping the Core. |
 | `pf-cli` | Binary: reference adapter, also used in CI. |
 
@@ -51,21 +53,22 @@ Everything else is substitutable.
 ```
 client  ──►  session.initialize          ──►  ServerCapabilities
 client  ──►  workspace.open(root)        ──►  WorkspaceId
+client  ──►  workspace.index             ──►  {files, entities, relations, facts}
 client  ──►  rules.load(src)             ──►  {rules_added, facts_added}
 client  ──►  rules.evaluate              ──►  {derived, iterations}
 client  ──►  graph.query(pattern)        ──►  {count, bindings[]}
 client  ──►  session.shutdown
 ```
 
-This is the smallest coherent loop that demonstrates the neuro-symbolic
-backbone: facts in → rules fire → derived facts → queryable graph. The LLM,
-patch planner, validator, and explainer slot on top of this loop in the
-following phases.
+This demonstrates the neuro-symbolic backbone end-to-end on **real code**:
+analyzer lowers Rust source → CSM → observed facts → rules fire → derived
+facts → queryable graph. The LLM, patch planner, validator, and explainer
+slot on top of this loop in the following steps.
 
-## What is deliberately missing in Phase 0
+## What is deliberately missing (still)
 
-- Language analyzers (no Rust/TS/Python lowering yet — analyzers come in the
-  MVP, Phase 1).
+- TypeScript / Python analyzers.
+- Type-aware Rust analysis (cross-module resolution via rust-analyzer).
 - LLM orchestration.
 - Patch planning / application.
 - Validation pipeline (syntactic, type, behavioral oracles).

@@ -5,6 +5,8 @@
 //! can call it directly; a future gRPC transport would reuse it unchanged.
 
 pub mod handlers;
+pub mod index;
+pub mod lower;
 pub mod session;
 
 pub use session::Core;
