@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prolog-forge.dev/schemas/protocol.json",
+  "title": "Prolog Forge protocol types",
+  "description": "Wire types for the Prolog Forge JSON-RPC 2.0 API. Phase 0.",
+  "$defs": {
+    "FactLayer": {
+      "type": "string",
+      "enum": ["observed", "inferred", "candidate", "validated", "constraint"],
+      "description": "Epistemic layer of a fact. Strictly disjoint; never mixed."
+    },
+    "FactDto": {
+      "type": "object",
+      "required": ["predicate", "args"],
+      "properties": {
+        "predicate": { "type": "string", "pattern": "^[a-z][A-Za-z0-9_]*$" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "layer": { "$ref": "#/$defs/FactLayer" }
+      }
+    },
+    "WorkspaceId": { "type": "string", "pattern": "^ws-\\d+$" },
+    "ClientCapabilities": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "ServerCapabilities": {
+      "type": "object",
+      "required": ["name", "version", "protocol_version", "methods"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "protocol_version": { "type": "string" },
+        "methods": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "methods": {
+    "session.initialize": {
+      "params": {
+        "type": "object",
+        "required": ["client"],
+        "properties": { "client": { "$ref": "#/$defs/ClientCapabilities" } }
+      },
+      "result": { "$ref": "#/$defs/ServerCapabilities" }
+    },
+    "session.shutdown": {
+      "params": { "type": "null" },
+      "result": { "type": "null" }
+    },
+    "workspace.open": {
+      "params": {
+        "type": "object",
+        "required": ["root"],
+        "properties": { "root": { "type": "string" } }
+      },
+      "result": {
+        "type": "object",
+        "required": ["workspace_id"],
+        "properties": { "workspace_id": { "$ref": "#/$defs/WorkspaceId" } }
+      }
+    },
+    "workspace.status": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id"],
+        "properties": { "workspace_id": { "$ref": "#/$defs/WorkspaceId" } }
+      },
+      "result": {
+        "type": "object",
+        "required": ["workspace_id", "root", "fact_count", "rule_count", "derived_count"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "root": { "type": "string" },
+          "fact_count": { "type": "integer", "minimum": 0 },
+          "rule_count": { "type": "integer", "minimum": 0 },
+          "derived_count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "graph.ingestFact": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "facts"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "facts": { "type": "array", "items": { "$ref": "#/$defs/FactDto" } }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["inserted"],
+        "properties": { "inserted": { "type": "integer", "minimum": 0 } }
+      }
+    },
+    "graph.query": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "pattern"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "pattern": { "type": "string" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["count", "bindings"],
+        "properties": {
+          "count": { "type": "integer", "minimum": 0 },
+          "bindings": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    },
+    "rules.load": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "source"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "source": { "type": "string" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["rules_added", "facts_added"],
+        "properties": {
+          "rules_added": { "type": "integer", "minimum": 0 },
+          "facts_added": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "rules.evaluate": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id"],
+        "properties": { "workspace_id": { "$ref": "#/$defs/WorkspaceId" } }
+      },
+      "result": {
+        "type": "object",
+        "required": ["derived", "iterations"],
+        "properties": {
+          "derived": { "type": "integer", "minimum": 0 },
+          "iterations": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

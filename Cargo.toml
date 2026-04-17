@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pf-protocol",
+    "crates/pf-csm",
+    "crates/pf-graph",
+    "crates/pf-rules",
+    "crates/pf-persist",
+    "crates/pf-core",
+    "crates/pf-daemon",
+    "crates/pf-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/maribakulj/prolog-forge"
+authors = ["Prolog Forge contributors"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+indexmap = { version = "2.2", features = ["serde"] }
+
+pf-protocol = { path = "crates/pf-protocol" }
+pf-csm = { path = "crates/pf-csm" }
+pf-graph = { path = "crates/pf-graph" }
+pf-rules = { path = "crates/pf-rules" }
+pf-persist = { path = "crates/pf-persist" }
+pf-core = { path = "crates/pf-core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
