@@ -229,6 +229,7 @@ dependencies = [
  "pf-graph",
  "pf-ingest",
  "pf-lang-rust",
+ "pf-llm",
  "pf-persist",
  "pf-protocol",
  "pf-rules",
@@ -285,6 +286,17 @@ dependencies = [
  "pf-csm",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pf-llm"
+version = "0.0.1"
+dependencies = [
+ "pf-graph",
+ "pf-protocol",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

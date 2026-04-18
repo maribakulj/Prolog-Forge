@@ -16,11 +16,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pf_core::{dispatch, Core};
 use pf_protocol::{
-    Id, IngestFactParams, InitializeParams, QueryParams, QueryResult, Request, Response,
-    RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
-    WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
-    WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_RULES_EVALUATE,
-    METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX, METHOD_WORKSPACE_OPEN,
+    Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, QueryParams,
+    QueryResult, Request, Response, RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams,
+    RulesLoadResult, ServerCapabilities, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult,
+    WorkspaceOpenParams, WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
+    METHOD_LLM_PROPOSE, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
+    METHOD_WORKSPACE_OPEN,
 };
 use serde_json::{json, Value};
 
@@ -58,6 +59,21 @@ enum Cmd {
         #[arg(long)]
         query: Option<String>,
     },
+    /// Index a Rust project then ask the bounded LLM orchestrator to
+    /// propose candidate facts anchored at the given entity id.
+    Propose {
+        /// Workspace root to index.
+        root: PathBuf,
+        /// Entity id to anchor the context selection (e.g. a function id).
+        #[arg(long)]
+        anchor: String,
+        /// Natural-language intent passed to the orchestrator.
+        #[arg(long, default_value = "propose invariants that a human might validate")]
+        intent: String,
+        /// Context radius (hops around the anchor).
+        #[arg(long, default_value = "1")]
+        hops: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -68,7 +84,64 @@ fn main() -> Result<()> {
         Cmd::Run { file } => cmd_run(file),
         Cmd::Query { file, pattern } => cmd_query(file, pattern),
         Cmd::Index { root, rules, query } => cmd_index(root, rules, query),
+        Cmd::Propose {
+            root,
+            anchor,
+            intent,
+            hops,
+        } => cmd_propose(root, anchor, intent, hops),
     }
+}
+
+fn cmd_propose(root: PathBuf, anchor: String, intent: String, hops: usize) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let _ = call(
+        &core,
+        METHOD_WORKSPACE_INDEX,
+        serde_json::to_value(WorkspaceIndexParams {
+            workspace_id: ws.clone(),
+        })?,
+    )?;
+
+    let resp = call(
+        &core,
+        METHOD_LLM_PROPOSE,
+        serde_json::to_value(LlmProposeParams {
+            workspace_id: ws,
+            intent,
+            anchor_id: anchor,
+            hops,
+            max_facts: 256,
+        })?,
+    )?;
+    let r: LlmProposeResult = serde_json::from_value(resp)?;
+    println!(
+        "propose: accepted {} / rejected {} (cache_hit={}, tokens_in={}, tokens_out={})",
+        r.accepted, r.rejected, r.cache_hit, r.tokens_in, r.tokens_out
+    );
+    for o in r.outcomes {
+        let status = if o.accepted { "  ACCEPT" } else { "  REJECT" };
+        println!(
+            "{} {}({}) — {}{}",
+            status,
+            o.predicate,
+            o.args.join(", "),
+            o.justification,
+            o.rejection_reason
+                .map(|r| format!("  [why: {r}]"))
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 fn cmd_index(root: PathBuf, rules: Option<PathBuf>, query: Option<String>) -> Result<()> {

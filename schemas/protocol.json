@@ -164,6 +164,44 @@
         }
       }
     },
+    "llm.propose": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "intent", "anchor_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "intent": { "type": "string" },
+          "anchor_id": { "type": "string" },
+          "hops": { "type": "integer", "minimum": 0, "default": 1 },
+          "max_facts": { "type": "integer", "minimum": 1, "default": 256 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["accepted", "rejected", "cache_hit", "tokens_in", "tokens_out", "outcomes"],
+        "properties": {
+          "accepted": { "type": "integer", "minimum": 0 },
+          "rejected": { "type": "integer", "minimum": 0 },
+          "cache_hit": { "type": "boolean" },
+          "tokens_in": { "type": "integer", "minimum": 0 },
+          "tokens_out": { "type": "integer", "minimum": 0 },
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["predicate", "args", "justification", "accepted"],
+              "properties": {
+                "predicate": { "type": "string" },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "justification": { "type": "string" },
+                "accepted": { "type": "boolean" },
+                "rejection_reason": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
     "rules.evaluate": {
       "params": {
         "type": "object",

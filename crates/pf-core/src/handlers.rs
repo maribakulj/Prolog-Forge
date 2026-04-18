@@ -19,6 +19,7 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_GRAPH_QUERY => handle_query(core, params),
         METHOD_RULES_LOAD => handle_rules_load(core, params),
         METHOD_RULES_EVALUATE => handle_rules_eval(core, params),
+        METHOD_LLM_PROPOSE => handle_llm_propose(core, params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -43,6 +44,7 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_GRAPH_QUERY.into(),
             METHOD_RULES_LOAD.into(),
             METHOD_RULES_EVALUATE.into(),
+            METHOD_LLM_PROPOSE.into(),
         ],
     };
     Ok(serde_json::to_value(caps).unwrap())
@@ -192,6 +194,47 @@ fn handle_rules_load(core: &Core, params: Value) -> Result<Value, RpcError> {
         })
         .map_err(RpcError::invalid_params)??;
     Ok(serde_json::to_value(result).unwrap())
+}
+
+fn handle_llm_propose(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: LlmProposeParams = decode(params)?;
+    let result = core
+        .with_workspace(&p.workspace_id, |_ws, st| {
+            pf_llm::propose(
+                core.llm_provider.as_ref(),
+                &core.llm_cache,
+                &mut st.graph,
+                pf_llm::ProposeRequest {
+                    intent: &p.intent,
+                    anchor_id: &p.anchor_id,
+                    hops: p.hops,
+                    max_facts: p.max_facts,
+                    max_tokens: 1024,
+                    temperature: 0.0,
+                },
+            )
+            .map_err(|e| RpcError::internal(e.to_string()))
+        })
+        .map_err(RpcError::invalid_params)??;
+    Ok(serde_json::to_value(LlmProposeResult {
+        accepted: result.accepted,
+        rejected: result.rejected,
+        cache_hit: result.cache_hit,
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+        outcomes: result
+            .outcomes
+            .into_iter()
+            .map(|o| ProposalOutcomeDto {
+                predicate: o.predicate,
+                args: o.args,
+                justification: o.justification,
+                accepted: o.accepted,
+                rejection_reason: o.rejection_reason,
+            })
+            .collect(),
+    })
+    .unwrap())
 }
 
 fn handle_rules_eval(core: &Core, params: Value) -> Result<Value, RpcError> {

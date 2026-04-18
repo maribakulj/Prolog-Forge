@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 
 use pf_graph::GraphStore;
+use pf_llm::{LlmProvider, MockProvider, ResponseCache};
 use pf_protocol::WorkspaceId;
 use pf_rules::Rule;
 
@@ -24,15 +25,34 @@ pub struct WorkspaceState {
     pub rules: Vec<Rule>,
 }
 
-#[derive(Default)]
 pub struct Core {
     workspaces: RwLock<HashMap<String, Workspace>>,
     next_id: Mutex<u64>,
+    pub llm_provider: Box<dyn LlmProvider>,
+    pub llm_cache: ResponseCache,
+}
+
+impl Default for Core {
+    fn default() -> Self {
+        Self {
+            workspaces: RwLock::new(HashMap::new()),
+            next_id: Mutex::new(0),
+            llm_provider: Box::new(MockProvider),
+            llm_cache: ResponseCache::new(),
+        }
+    }
 }
 
 impl Core {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Swap the LLM provider (used by the daemon to inject a real backend
+    /// when available; tests and CI default to `MockProvider`).
+    pub fn with_llm_provider(mut self, p: Box<dyn LlmProvider>) -> Self {
+        self.llm_provider = p;
+        self
     }
 
     pub fn open(&self, root: String) -> WorkspaceId {

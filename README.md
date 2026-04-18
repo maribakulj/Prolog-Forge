@@ -11,12 +11,12 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 1** — Phase 0 foundations shipped, plus a working
-> Rust analyzer (syn-based) and an end-to-end indexing pipeline. Running
-> `pf index <rust-project> --rules pack.pfr --query 'recursive(F)'` extracts
-> facts from real source, runs the rule engine, and answers queries.
-> LLM orchestration, patch planning, and validation land in the following
-> steps. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 2** — Phase 0 + Rust indexing + a bounded LLM
+> orchestrator. `pf propose` indexes a project, extracts a sub-graph of
+> trusted facts around an anchor, calls a schema-constrained LLM
+> (deterministic `MockProvider` by default), filters out any hallucinated
+> identifier, and inserts the survivors at the `candidate` epistemic layer.
+> Patch planning and validation land next. See [Roadmap](#roadmap).
 
 ---
 
@@ -67,7 +67,7 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── CSM             (v0 shipped)
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
-                                    ├── LLM orchestrator (Phase 1.2)
+                                    ├── LLM orchestrator (Phase 1.2 ✓)
                                     ├── patch planner    (Phase 1.3)
                                     ├── validator        (Phase 1.4)
                                     └── explainer        (Phase 2)
@@ -85,7 +85,8 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-persist`](crates/pf-persist) | KV trait + in-memory backend |
 | [`pf-ingest`](crates/pf-ingest) | Filesystem walker and source dispatch |
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
-| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline |
+| [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard |
+| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
@@ -153,6 +154,25 @@ relations into graph facts (`function/2`, `calls/2`, `implements/2`, …), and
 makes them queryable through the same Datalog surface used by ad-hoc rule
 files. Fact schema: [`docs/rules-dsl.md`](docs/rules-dsl.md).
 
+### Ask the bounded LLM orchestrator for candidates
+
+```bash
+$ pf propose examples/rust-demo \
+    --anchor 'src/lib.rs#fn:add@src/lib.rs#file' \
+    --intent 'propose purity invariants'
+propose: accepted 1 / rejected 1 (cache_hit=false, tokens_in=393, tokens_out=65)
+  ACCEPT pure(src/lib.rs#fn:add@src/lib.rs#file) — no side effects observed for add
+  REJECT pure(does_not_exist_in_graph) — …  [why: unknown identifier `does_not_exist_in_graph` (hallucination)]
+```
+
+The orchestrator builds context from the graph (trusted layers only),
+prompts the provider with a schema-constrained request, rejects any
+proposal whose identifiers do not resolve against the graph, and inserts
+the survivors at `FactLayer::Candidate`. Candidates are **never** promoted
+automatically — a human (or a future validation pipeline) is required to
+move them to `validated`. Default provider is the deterministic
+`MockProvider`; network providers slot in behind the same trait.
+
 ### Talk to the daemon
 
 The daemon speaks JSON-RPC 2.0 with LSP-style `Content-Length` framing on
@@ -179,6 +199,7 @@ CI and is the minimal reference client.
 | `graph.query` | Pattern-match an atom against the graph. |
 | `rules.load` | Parse and register a Datalog source block. |
 | `rules.evaluate` | Run the engine to fixpoint. |
+| `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
 
 Typed schemas live in [`schemas/protocol.json`](schemas/protocol.json). The
 Rust wire types in `pf-protocol` are kept in sync with that file by hand in
@@ -248,7 +269,8 @@ touching any Phase 0 artifact beyond the API enum.
 |---|---|---|
 | **0** | Contracts, JSON-RPC, CSM v0, graph, Datalog v1, CLI, CI | **shipped** |
 | **1.1** | `pf-ingest`, `pf-lang-rust`, `workspace.index`, CSM→fact lowering, real-project demo | **shipped** |
-| 1.2–1.4 (MVP rest) | LLM orchestrator, patch planner, validation pipeline, VS Code adapter minimal | 2–5 months |
+| **1.2** | `pf-llm`, `llm.propose`, context from trusted layers only, schema-validated output, anti-hallucination guard | **shipped** |
+| 1.3–1.4 (MVP rest) | Patch planner + CST-aware printer, validation pipeline, VS Code adapter minimal | 2–4 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

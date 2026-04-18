@@ -133,7 +133,48 @@ def main() -> int:
         assert rec["count"] == 1, rec
         assert "countdown" in rec["bindings"][0]["F"], rec
 
-        send(proc, {"jsonrpc": "2.0", "id": 11, "method": "session.shutdown"})
+        # ---- llm.propose (mock provider) ---------------------------------
+        # Pick any known function id to anchor on.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 11, "method": "graph.query",
+            "params": {"workspace_id": ws2, "pattern": "function(F, add)"},
+        })
+        fn_rows = recv(proc)["result"]["bindings"]
+        assert fn_rows, "expected at least one function(_, add) fact"
+        anchor = fn_rows[0]["F"]
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 12, "method": "llm.propose",
+            "params": {
+                "workspace_id": ws2,
+                "intent": "propose purity",
+                "anchor_id": anchor,
+                "hops": 1,
+            },
+        })
+        prop = recv(proc)["result"]
+        assert prop["accepted"] >= 1, prop
+        assert prop["rejected"] >= 1, prop  # MockProvider includes a hallucination
+        assert any(
+            (o["rejection_reason"] or "").find("hallucination") >= 0
+            for o in prop["outcomes"] if not o["accepted"]
+        ), prop
+
+        # Second call hits the cache (context unchanged — candidates are
+        # excluded from the trusted context).
+        send(proc, {
+            "jsonrpc": "2.0", "id": 13, "method": "llm.propose",
+            "params": {
+                "workspace_id": ws2,
+                "intent": "propose purity",
+                "anchor_id": anchor,
+                "hops": 1,
+            },
+        })
+        prop2 = recv(proc)["result"]
+        assert prop2["cache_hit"] is True, prop2
+
+        send(proc, {"jsonrpc": "2.0", "id": 14, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")

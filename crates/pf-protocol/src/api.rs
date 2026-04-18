@@ -138,6 +138,48 @@ pub const METHOD_RULES_LOAD: &str = "rules.load";
 pub const METHOD_RULES_EVALUATE: &str = "rules.evaluate";
 pub const METHOD_RULES_LIST: &str = "rules.list";
 
+// ---------- llm -----------------------------------------------------------
+
+pub const METHOD_LLM_PROPOSE: &str = "llm.propose";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProposeParams {
+    pub workspace_id: WorkspaceId,
+    pub intent: String,
+    /// Entity id to use as the starting point for context extraction.
+    pub anchor_id: String,
+    #[serde(default = "default_hops")]
+    pub hops: usize,
+    #[serde(default = "default_max_facts")]
+    pub max_facts: usize,
+}
+
+fn default_hops() -> usize {
+    1
+}
+fn default_max_facts() -> usize {
+    256
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProposeResult {
+    pub accepted: usize,
+    pub rejected: usize,
+    pub cache_hit: bool,
+    pub tokens_in: u32,
+    pub tokens_out: u32,
+    pub outcomes: Vec<ProposalOutcomeDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalOutcomeDto {
+    pub predicate: String,
+    pub args: Vec<String>,
+    pub justification: String,
+    pub accepted: bool,
+    pub rejection_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RulesLoadParams {
     pub workspace_id: WorkspaceId,

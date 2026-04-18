@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.2.0` (Phase 1 step 1, pre-stable).
+**Version:** `0.3.0` (Phase 1 step 2, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -44,6 +44,7 @@ server-driven from that list.
 | `graph.query` | Pattern-match one atom against the graph. |
 | `rules.load` | Parse a Datalog source block; registers rules and seed facts. |
 | `rules.evaluate` | Run the rule engine to fixpoint; returns `{derived, iterations}`. |
+| `llm.propose` | Ask the bounded LLM orchestrator for candidate facts anchored at an entity; every proposal is identifier-resolved against the graph before insertion at the `candidate` layer. |
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
 and are the source of truth. The Rust types in `pf-protocol` are expected to

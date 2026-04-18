@@ -8,6 +8,7 @@ members = [
     "crates/pf-persist",
     "crates/pf-ingest",
     "crates/pf-lang-rust",
+    "crates/pf-llm",
     "crates/pf-core",
     "crates/pf-daemon",
     "crates/pf-cli",
@@ -38,6 +39,7 @@ pf-rules = { path = "crates/pf-rules" }
 pf-persist = { path = "crates/pf-persist" }
 pf-ingest = { path = "crates/pf-ingest" }
 pf-lang-rust = { path = "crates/pf-lang-rust" }
+pf-llm = { path = "crates/pf-llm" }
 pf-core = { path = "crates/pf-core" }
 
 [profile.release]
