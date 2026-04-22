@@ -164,6 +164,27 @@
         }
       }
     },
+    "patch.rollback": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "commit_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "commit_id": { "type": "string" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["rolled_back", "commit_id", "files_restored", "label", "reason"],
+        "properties": {
+          "rolled_back": { "type": "boolean" },
+          "commit_id": { "type": "string" },
+          "files_restored": { "type": "integer", "minimum": 0 },
+          "label": { "type": "string" },
+          "reason": { "type": ["string", "null"] }
+        }
+      }
+    },
     "patch.apply": {
       "params": {
         "type": "object",

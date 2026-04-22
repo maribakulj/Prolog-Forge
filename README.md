@@ -11,13 +11,14 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 4** — Phase 0 + Rust indexing + bounded LLM
-> orchestrator + typed patch planner + transactional apply gated by a
-> pluggable validation pipeline. `pf rename --apply` previews the diff,
-> runs the syntactic stage against the shadow workspace, and only if it
-> passes writes every affected file via temp + atomic rename with
-> rollback on failure. The filesystem is only touched through this
-> gate. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 5** — everything from step 4 plus a rule-stage
+> apply-gate (rule packs with `violation(...)` heads block applies that
+> introduce constraint violations), a disk-persistent commit journal at
+> `<root>/.prolog-forge/journal/`, and `patch.rollback` which undoes an
+> applied commit atomically with an optimistic-concurrency preflight
+> against the on-disk state. The MVP loop — **index → rules →
+> LLM candidates → patch → validate → apply → journal → rollback** —
+> is now closed end-to-end. See [Roadmap](#roadmap).
 
 ---
 
@@ -70,7 +71,8 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── rule engine     (Phase 0 ✓)
                                     ├── LLM orchestrator (Phase 1.2 ✓)
                                     ├── patch planner    (Phase 1.3 ✓)
-                                    ├── validator        (Phase 1.4 ✓, syntactic)
+                                    ├── validator        (Phase 1.4–5 ✓, syntactic + rule)
+                                    ├── commit journal   (Phase 1.5 ✓, JSON on disk)
                                     └── explainer        (Phase 2)
 ```
 
@@ -224,6 +226,32 @@ Every `patch.apply` goes through three gates:
    fails, files already renamed are restored from in-memory backups so
    the workspace never ends up half-patched.
 
+When all three gates pass, a JSON commit entry is written to
+`<root>/.prolog-forge/journal/<commit_id>.json` with the before/after
+bytes of every changed file.
+
+### Roll a commit back
+
+```bash
+$ pf rollback examples/rust-demo commit-18a8a527b73cc155
+rolled back: commit commit-18a8a527b73cc155 (rename add -> sum), 1 file(s) restored
+```
+
+`patch.rollback` refuses if the on-disk content no longer matches what
+was written at commit time (someone hand-edited the file — rollback is
+not automatic conflict resolution). On success it uses the same atomic
+write path as `apply`, then deletes the journal entry. Single-commit
+rollback only at this stage; a redo stack and cross-commit undo come
+later.
+
+### Rule-pack apply-gate
+
+A workspace whose `rules.load`ed pack defines `violation(...)` rules
+turns every `patch.apply` into a guarded operation: the shadow source
+is re-analyzed, the graph is rebuilt, the rules are re-evaluated, and
+any derived `violation/*` fact rejects the apply with diagnostics. See
+[`docs/rules-dsl.md`](docs/rules-dsl.md#the-violation1-convention-apply-gate).
+
 ### Talk to the daemon
 
 The daemon speaks JSON-RPC 2.0 with LSP-style `Content-Length` framing on
@@ -252,7 +280,8 @@ CI and is the minimal reference client.
 | `rules.evaluate` | Run the engine to fixpoint. |
 | `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
 | `patch.preview` | Simulate a typed `PatchPlan` against the workspace, return per-file unified diffs. FS untouched. |
-| `patch.apply` | Validate + preflight + atomic write. Returns `{applied, commit_id, validation, rejection_reason}`. |
+| `patch.apply` | Validate + preflight + atomic write + journal. Returns `{applied, commit_id, validation, rejection_reason}`. |
+| `patch.rollback` | Restore a committed patch. Preflight + atomic restore + journal delete. |
 
 Typed schemas live in [`schemas/protocol.json`](schemas/protocol.json). The
 Rust wire types in `pf-protocol` are kept in sync with that file by hand in
@@ -325,7 +354,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.2** | `pf-llm`, `llm.propose`, context from trusted layers only, schema-validated output, anti-hallucination guard | **shipped** |
 | **1.3** | `pf-patch`, `patch.preview`, typed ops, byte-accurate Rust rename, unified diffs, `pf rename` CLI | **shipped** |
 | **1.4** | `pf-validate` (pluggable stages), `patch.apply` with preflight + atomic write + rollback, `pf rename --apply` | **shipped (syntactic stage)** |
-| 1.5 (MVP rest) | Type + rule + behavioral validation stages, disk-persistent commit journal, VS Code adapter minimal | 2–4 months |
+| **1.5** | `RuleStage` (`violation/*` apply-gate), disk-persistent commit journal, `patch.rollback`, `pf rollback` CLI | **shipped** |
+| 1.6 (MVP rest) | Type-aware rename (rust-analyzer), behavioral validation stage, VS Code adapter minimal | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

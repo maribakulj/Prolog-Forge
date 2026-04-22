@@ -7,8 +7,11 @@
 pub mod apply;
 pub mod handlers;
 pub mod index;
+pub mod journal;
 pub mod lower;
+pub mod rollback;
 pub mod session;
+pub mod validate_stages;
 
 pub use session::Core;
 

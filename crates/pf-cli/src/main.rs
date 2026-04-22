@@ -17,12 +17,13 @@ use clap::{Parser, Subcommand};
 use pf_core::{dispatch, Core};
 use pf_protocol::{
     Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, PatchApplyParams,
-    PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult, QueryParams,
-    QueryResult, Request, Response, RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams,
-    RulesLoadResult, ServerCapabilities, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult,
-    WorkspaceOpenParams, WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
-    METHOD_LLM_PROPOSE, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW, METHOD_RULES_EVALUATE,
-    METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX, METHOD_WORKSPACE_OPEN,
+    PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult, PatchRollbackParams,
+    PatchRollbackResult, QueryParams, QueryResult, Request, Response, RulesEvaluateParams,
+    RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities, WorkspaceId,
+    WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams, WorkspaceOpenResult,
+    METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_LLM_PROPOSE, METHOD_PATCH_APPLY,
+    METHOD_PATCH_PREVIEW, METHOD_PATCH_ROLLBACK, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD,
+    METHOD_WORKSPACE_INDEX, METHOD_WORKSPACE_OPEN,
 };
 use serde_json::{json, Value};
 
@@ -77,6 +78,15 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Roll back a previously applied commit, restoring the workspace to
+    /// its pre-commit state. Refuses if the on-disk content no longer
+    /// matches what was written at commit time.
+    Rollback {
+        /// Workspace root.
+        root: PathBuf,
+        /// Commit id returned by `pf rename --apply` (or any other apply).
+        commit_id: String,
+    },
     /// Index a Rust project then ask the bounded LLM orchestrator to
     /// propose candidate facts anchored at the given entity id.
     Propose {
@@ -114,6 +124,43 @@ fn main() -> Result<()> {
             to,
             apply,
         } => cmd_rename(root, from, to, apply),
+        Cmd::Rollback { root, commit_id } => cmd_rollback(root, commit_id),
+    }
+}
+
+fn cmd_rollback(root: PathBuf, commit_id: String) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_ROLLBACK,
+        serde_json::to_value(PatchRollbackParams {
+            workspace_id: ws,
+            commit_id: commit_id.clone(),
+        })?,
+    )?;
+    let r: PatchRollbackResult = serde_json::from_value(resp)?;
+    if r.rolled_back {
+        println!(
+            "rolled back: commit {} ({}), {} file(s) restored",
+            r.commit_id, r.label, r.files_restored
+        );
+        Ok(())
+    } else {
+        eprintln!(
+            "rollback failed for {}: {}",
+            commit_id,
+            r.reason.unwrap_or_else(|| "unknown".into())
+        );
+        std::process::exit(2);
     }
 }
 

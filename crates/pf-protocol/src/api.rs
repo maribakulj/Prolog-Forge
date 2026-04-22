@@ -184,6 +184,7 @@ pub struct ProposalOutcomeDto {
 
 pub const METHOD_PATCH_PREVIEW: &str = "patch.preview";
 pub const METHOD_PATCH_APPLY: &str = "patch.apply";
+pub const METHOD_PATCH_ROLLBACK: &str = "patch.rollback";
 
 /// Wire shape of a patch plan. The `op` field tags the variant, matching the
 /// `#[serde(tag = "op")]` enum in `pf-patch`. Kept as `Value` at the
@@ -262,6 +263,21 @@ pub struct DiagnosticDto {
     pub severity: String,
     pub file: Option<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchRollbackParams {
+    pub workspace_id: WorkspaceId,
+    pub commit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchRollbackResult {
+    pub rolled_back: bool,
+    pub commit_id: String,
+    pub files_restored: usize,
+    pub label: String,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -22,6 +22,7 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_LLM_PROPOSE => handle_llm_propose(core, params),
         METHOD_PATCH_PREVIEW => handle_patch_preview(core, params),
         METHOD_PATCH_APPLY => handle_patch_apply(core, params),
+        METHOD_PATCH_ROLLBACK => handle_patch_rollback(core, params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -49,6 +50,7 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_LLM_PROPOSE.into(),
             METHOD_PATCH_PREVIEW.into(),
             METHOD_PATCH_APPLY.into(),
+            METHOD_PATCH_ROLLBACK.into(),
         ],
     };
     Ok(serde_json::to_value(caps).unwrap())
@@ -258,7 +260,7 @@ fn handle_patch_preview(core: &Core, params: Value) -> Result<Value, RpcError> {
 }
 
 fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
-    use pf_validate::{Pipeline, ValidationContext};
+    use pf_validate::{Pipeline, ValidationContext, ValidationStage};
 
     let p: PatchApplyParams = decode(params)?;
 
@@ -270,10 +272,11 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
         ops.push(op);
     }
     let plan = pf_patch::PatchPlan::labelled(ops, p.plan.label);
+    let plan_label = plan.label.clone();
 
-    // Load originals + root.
-    let (root, original) = core
-        .with_workspace(&p.workspace_id, |w, _st| {
+    // Load originals + root + snapshot the workspace's rule set.
+    let (root, original, rules) = core
+        .with_workspace(&p.workspace_id, |w, st| {
             let root = std::path::PathBuf::from(&w.root);
             let mut map: std::collections::BTreeMap<String, String> =
                 std::collections::BTreeMap::new();
@@ -285,7 +288,7 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
                     map.insert(sf.relative.display().to_string(), src);
                 }
             }
-            (root, map)
+            (root, map, st.rules.clone())
         })
         .map_err(RpcError::invalid_params)?;
 
@@ -298,8 +301,14 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
         .filter(|(k, v)| original.get(*k).map(|o| o != *v).unwrap_or(false))
         .count();
 
-    // Run validation pipeline.
-    let validation = Pipeline::syntactic_only().run(&ValidationContext {
+    // Build the pipeline. SyntacticStage always runs; RuleStage runs only
+    // when the workspace has rules loaded — rule packs gate applies via
+    // the `violation(...)` convention documented in docs/rules-dsl.md.
+    let mut stages: Vec<Box<dyn ValidationStage>> = vec![Box::new(pf_validate::SyntacticStage)];
+    if !rules.is_empty() {
+        stages.push(Box::new(crate::validate_stages::RuleStage::new(rules)));
+    }
+    let validation = Pipeline::custom(stages).run(&ValidationContext {
         shadow_files: &shadow,
         original_files: &original,
     });
@@ -319,16 +328,42 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
     }
 
     match crate::apply::apply_transactional(&root, &shadow, &original) {
-        Ok(out) => Ok(serde_json::to_value(PatchApplyResult {
-            applied: true,
-            commit_id: Some(out.commit_id),
-            files_written: out.files_written,
-            bytes_written: out.bytes_written,
-            total_replacements,
-            validation: validation_dto,
-            rejection_reason: None,
-        })
-        .unwrap()),
+        Ok(out) => {
+            // Record the commit to the on-disk journal so `patch.rollback`
+            // can undo it. Journal failures are non-fatal for the apply
+            // itself — surface them as warnings on stderr via tracing but
+            // still report the commit as applied.
+            let files: Vec<crate::journal::CommitFile> = shadow
+                .iter()
+                .filter_map(|(rel, new_content)| {
+                    let before = original.get(rel)?;
+                    if before == new_content {
+                        None
+                    } else {
+                        Some(crate::journal::CommitFile {
+                            path: rel.clone(),
+                            before: before.clone(),
+                            after: new_content.clone(),
+                        })
+                    }
+                })
+                .collect();
+            let entry = crate::journal::new_entry(out.commit_id.clone(), plan_label, files);
+            if let Err(e) = crate::journal::write(&root, &entry) {
+                tracing::warn!("commit journal write failed: {e}");
+            }
+
+            Ok(serde_json::to_value(PatchApplyResult {
+                applied: true,
+                commit_id: Some(out.commit_id),
+                files_written: out.files_written,
+                bytes_written: out.bytes_written,
+                total_replacements,
+                validation: validation_dto,
+                rejection_reason: None,
+            })
+            .unwrap())
+        }
         Err(e) => Ok(serde_json::to_value(PatchApplyResult {
             applied: false,
             commit_id: None,
@@ -337,6 +372,32 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
             total_replacements,
             validation: validation_dto,
             rejection_reason: Some(e.to_string()),
+        })
+        .unwrap()),
+    }
+}
+
+fn handle_patch_rollback(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: PatchRollbackParams = decode(params)?;
+    let root = core
+        .with_workspace(&p.workspace_id, |w, _st| std::path::PathBuf::from(&w.root))
+        .map_err(RpcError::invalid_params)?;
+
+    match crate::rollback::rollback(&root, &p.commit_id) {
+        Ok(out) => Ok(serde_json::to_value(PatchRollbackResult {
+            rolled_back: true,
+            commit_id: out.commit_id,
+            files_restored: out.files_restored,
+            label: out.label,
+            reason: None,
+        })
+        .unwrap()),
+        Err(e) => Ok(serde_json::to_value(PatchRollbackResult {
+            rolled_back: false,
+            commit_id: p.commit_id,
+            files_restored: 0,
+            label: String::new(),
+            reason: Some(e.to_string()),
         })
         .unwrap()),
     }
