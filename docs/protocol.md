@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.8.0` (Phase 1 step 7, pre-stable).
+**Version:** `0.8.1` (Phase 1 step 8, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -62,9 +62,7 @@ with `invalid_params`.
 |---|---|---|
 | `default` (or missing) | `syntactic`; `rules` when rule pack loaded | Fast default. Catches broken syntax and any `violation/*` fact derivable from the rule pack. |
 | `typed` | everything in `default` + `cargo_check` | Runs `cargo check --message-format=json` against a temp shadow of the workspace. Upgrades the explainer's verdict from `not_proven` to `accepted` when green. Requires `cargo` on `PATH`; passes with a warning diagnostic when it isn't (the stage is an oracle, not a hard gate). Slower — opt in per apply. |
-
-Future profiles (`tested`, `thorough`) will add behavioral stages once
-the test-impact graph and oracle stages land.
+| `tested` | everything in `typed` + `cargo_test` | Additionally runs `cargo test --no-fail-fast` against the shadow and parses the runner's stable `test X ... FAILED` lines into one diagnostic per failing test. Strongest behavioral gate; substantially slower (full test compilation + run). Feeds structured failure names into `llm.refine` as prior diagnostics. |
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
 and are the source of truth. The Rust types in `pf-protocol` are expected to

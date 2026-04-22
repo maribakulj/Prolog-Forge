@@ -416,6 +416,10 @@ fn handle_patch_rollback(core: &Core, params: Value) -> Result<Value, RpcError> 
 ///   materialises the shadow files in a temp directory and shells out to
 ///   `cargo check`. `cargo` must be on `PATH`; the stage passes with a
 ///   warning diagnostic when it isn't.
+/// - `"tested"`: everything in `"typed"` plus `CargoTestStage`, which
+///   additionally runs `cargo test` against the shadow. Strongest
+///   verdict but correspondingly slower; intended for CI-grade
+///   `patch.apply`.
 fn build_pipeline(
     profile: &str,
     workspace_root: &std::path::Path,
@@ -436,9 +440,19 @@ fn build_pipeline(
                 std::time::Duration::from_secs(180),
             )));
         }
+        "tested" => {
+            stages.push(Box::new(crate::validate_stages::CargoCheckStage::new(
+                workspace_root.to_path_buf(),
+                std::time::Duration::from_secs(180),
+            )));
+            stages.push(Box::new(crate::validate_stages::CargoTestStage::new(
+                workspace_root.to_path_buf(),
+                std::time::Duration::from_secs(300),
+            )));
+        }
         other => {
             return Err(format!(
-                "unknown validation_profile `{other}` (known: default, typed)"
+                "unknown validation_profile `{other}` (known: default, typed, tested)"
             ));
         }
     }

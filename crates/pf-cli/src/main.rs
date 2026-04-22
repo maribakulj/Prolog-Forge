@@ -85,6 +85,12 @@ enum Cmd {
         /// verdict from `not_proven` to `accepted`.
         #[arg(long)]
         typecheck: bool,
+        /// Additionally run `cargo test --no-fail-fast` against the
+        /// shadow copy (validation_profile = "tested"). Implies
+        /// `--typecheck`. Strongest behavioral gate; substantially
+        /// slower than the default.
+        #[arg(long)]
+        run_tests: bool,
     },
     /// Roll back a previously applied commit, restoring the workspace to
     /// its pre-commit state. Refuses if the on-disk content no longer
@@ -182,7 +188,8 @@ fn main() -> Result<()> {
             to,
             apply,
             typecheck,
-        } => cmd_rename(root, from, to, apply, typecheck),
+            run_tests,
+        } => cmd_rename(root, from, to, apply, typecheck, run_tests),
         Cmd::Rollback { root, commit_id } => cmd_rollback(root, commit_id),
     }
 }
@@ -223,7 +230,14 @@ fn cmd_rollback(root: PathBuf, commit_id: String) -> Result<()> {
     }
 }
 
-fn cmd_rename(root: PathBuf, from: String, to: String, apply: bool, typecheck: bool) -> Result<()> {
+fn cmd_rename(
+    root: PathBuf,
+    from: String,
+    to: String,
+    apply: bool,
+    typecheck: bool,
+    run_tests: bool,
+) -> Result<()> {
     let core = Core::new();
     let resp = call(
         &core,
@@ -281,7 +295,9 @@ fn cmd_rename(root: PathBuf, from: String, to: String, apply: bool, typecheck: b
         serde_json::to_value(PatchApplyParams {
             workspace_id: ws,
             plan,
-            validation_profile: if typecheck {
+            validation_profile: if run_tests {
+                Some("tested".into())
+            } else if typecheck {
                 Some("typed".into())
             } else {
                 None

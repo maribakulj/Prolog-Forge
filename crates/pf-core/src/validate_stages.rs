@@ -230,9 +230,16 @@ impl ValidationStage for CargoCheckStage {
             }
         }
 
-        // 3. Spawn `cargo check --message-format=json --quiet`.
+        // 3. Spawn `cargo check --all-targets --message-format=json --quiet`.
+        //    `--all-targets` is deliberate: without it, `cargo check`
+        //    skips `#[cfg(test)]` modules, examples, and benches —
+        //    meaning a patch that breaks a test body but not a lib
+        //    body would slip through. The current rename is not
+        //    scope-aware, so the common failure mode is an unresolved
+        //    reference *inside a test*; we have to compile tests to
+        //    see it.
         let mut cmd = std::process::Command::new("cargo");
-        cmd.args(["check", "--message-format=json", "--quiet"])
+        cmd.args(["check", "--all-targets", "--message-format=json", "--quiet"])
             .current_dir(&shadow_root)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -471,6 +478,275 @@ mod cargo_check_tests {
         assert!(
             r.diagnostics.iter().any(|d| d.severity == Severity::Error),
             "expected at least one error-severity diagnostic: {:?}",
+            r.diagnostics
+        );
+    }
+}
+
+/// Runs `cargo test --quiet --no-fail-fast` on a shadow copy of the workspace.
+///
+/// Where [`CargoCheckStage`] proves the patch type-checks, this stage proves
+/// it preserves behavior: if any existing test fails under the proposed
+/// sources, the apply is rejected. It is the behavioral half of the typed
+/// validation story and uses the same mirror-and-overlay mechanics; the
+/// only differences are the cargo subcommand and the stage's tolerance
+/// envelope (tests can be slow).
+///
+/// Opt-in via `validation_profile = "tested"` on `patch.apply` /
+/// `explain.patch`. When `cargo` is missing, or the workspace has no
+/// `Cargo.toml`, the stage degrades gracefully (warning / info + pass).
+pub struct CargoTestStage {
+    workspace_root: PathBuf,
+    /// Wall-clock cap on the `cargo test` run. Tests compile twice
+    /// (once for the type-checker, once for the runner) the first time,
+    /// so budgets need to be larger than for `CargoCheckStage`.
+    timeout: Duration,
+}
+
+impl CargoTestStage {
+    pub fn new(workspace_root: PathBuf, timeout: Duration) -> Self {
+        Self {
+            workspace_root,
+            timeout,
+        }
+    }
+}
+
+impl ValidationStage for CargoTestStage {
+    fn name(&self) -> &'static str {
+        "cargo_test"
+    }
+
+    fn validate(&self, ctx: &ValidationContext<'_>) -> StageReport {
+        let manifest = self.workspace_root.join("Cargo.toml");
+        if !manifest.exists() {
+            return StageReport::with_errors(
+                self.name(),
+                vec![Diagnostic {
+                    severity: Severity::Info,
+                    file: None,
+                    message: "no Cargo.toml at workspace root; cargo_test skipped".into(),
+                }],
+            );
+        }
+
+        // Same shadow materialisation as CargoCheckStage. Factoring is
+        // deliberate — we want the two stages independently debuggable.
+        let tmp = match tempfile::tempdir() {
+            Ok(t) => t,
+            Err(e) => return error_stage(self.name(), format!("tempdir: {e}")),
+        };
+        let shadow_root = tmp.path().join("project");
+        if let Err(e) = mirror_dir(&self.workspace_root, &shadow_root) {
+            return error_stage(self.name(), format!("mirror: {e}"));
+        }
+        for (rel, content) in ctx.shadow_files {
+            let dest = shadow_root.join(rel);
+            if let Some(parent) = dest.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return error_stage(self.name(), format!("mkdir {}: {e}", parent.display()));
+                }
+            }
+            if let Err(e) = std::fs::write(&dest, content) {
+                return error_stage(self.name(), format!("write {}: {e}", dest.display()));
+            }
+        }
+
+        // `--no-fail-fast` so we get every failing test, not just the
+        // first. `--quiet` keeps the runner output compact. Pass a
+        // deterministic test thread count so CI behavior is stable.
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.args([
+            "test",
+            "--quiet",
+            "--no-fail-fast",
+            "--",
+            "--test-threads=1",
+        ])
+        .current_dir(&shadow_root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return StageReport::with_errors(
+                    self.name(),
+                    vec![Diagnostic {
+                        severity: Severity::Warning,
+                        file: None,
+                        message: format!("cargo not available: {e}"),
+                    }],
+                );
+            }
+        };
+
+        let (status, combined) = match wait_with_output_and_timeout(child, self.timeout) {
+            Ok(x) => x,
+            Err(msg) => return error_stage(self.name(), msg),
+        };
+
+        if status.success() {
+            return StageReport::ok(self.name());
+        }
+
+        // Non-zero exit: extract failing test names from the runner
+        // output. The stable libtest format emits lines like:
+        //     test tests::it_works ... FAILED
+        // and a final summary:
+        //     failures:
+        //         tests::it_works
+        // The exact wording is stable across cargo releases. We produce
+        // one error Diagnostic per failing test name and a final
+        // summary Diagnostic so the rejection reason is legible.
+        let mut failures: Vec<String> = Vec::new();
+        for line in combined.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("test ") {
+                if let Some(name) = rest.strip_suffix(" ... FAILED") {
+                    failures.push(name.trim().to_string());
+                }
+            }
+        }
+        failures.sort();
+        failures.dedup();
+
+        let mut diags: Vec<Diagnostic> = failures
+            .into_iter()
+            .map(|name| Diagnostic {
+                severity: Severity::Error,
+                file: None,
+                message: format!("test `{name}` failed"),
+            })
+            .collect();
+        if diags.is_empty() {
+            // Exited non-zero but libtest did not announce a failure in
+            // the recognised shape — surface the tail of the output so
+            // the reviewer has something to go on.
+            let tail: String = combined
+                .lines()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .join("\n");
+            diags.push(Diagnostic {
+                severity: Severity::Error,
+                file: None,
+                message: format!(
+                    "cargo test exited with status {} without a recognised failure line:\n{tail}",
+                    status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".into())
+                ),
+            });
+        }
+        StageReport::with_errors(self.name(), diags)
+    }
+}
+
+/// Variant of [`wait_with_timeout`] that captures both stdout and stderr
+/// interleaved. Tests print to stdout; runner metadata goes to stderr;
+/// having both simplifies diagnostic extraction.
+fn wait_with_output_and_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, String), String> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                if let Some(mut s) = child.stdout.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_string(&mut out);
+                }
+                if let Some(mut s) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_string(&mut out);
+                }
+                return Ok((status, out));
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("cargo test timed out after {:?}", timeout));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("wait: {e}")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cargo_test_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn write_fixture(tmp: &std::path::Path, lib_src: &str) {
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"pf_cargo_test_fixture\"\nversion = \"0.0.0\"\n\
+             edition = \"2021\"\npublish = false\n[lib]\npath = \"src/lib.rs\"\n\
+             [workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.join("src/lib.rs"), lib_src).unwrap();
+    }
+
+    const LIB_PLUS_TEST: &str = "\
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn add_is_correct() {
+        assert_eq!(add(1, 2), 3);
+    }
+}
+";
+
+    #[test]
+    fn passes_when_shadow_preserves_behavior() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), LIB_PLUS_TEST);
+        // Shadow is identical to the on-disk file. Tests must pass.
+        let mut shadow: BTreeMap<String, String> = BTreeMap::new();
+        shadow.insert("src/lib.rs".into(), LIB_PLUS_TEST.into());
+        let original = shadow.clone();
+        let ctx = ValidationContext {
+            shadow_files: &shadow,
+            original_files: &original,
+        };
+        let stage = CargoTestStage::new(tmp.path().to_path_buf(), Duration::from_secs(180));
+        let r = stage.validate(&ctx);
+        assert!(r.ok, "expected behavioral pass, got {:?}", r);
+    }
+
+    #[test]
+    fn fails_when_shadow_breaks_a_test() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), LIB_PLUS_TEST);
+        // Broken shadow: add now subtracts, so `add(1, 2) == 3` fails.
+        let broken = LIB_PLUS_TEST.replace("a + b", "a - b");
+        let mut shadow: BTreeMap<String, String> = BTreeMap::new();
+        shadow.insert("src/lib.rs".into(), broken);
+        let original: BTreeMap<String, String> = BTreeMap::new();
+        let ctx = ValidationContext {
+            shadow_files: &shadow,
+            original_files: &original,
+        };
+        let stage = CargoTestStage::new(tmp.path().to_path_buf(), Duration::from_secs(180));
+        let r = stage.validate(&ctx);
+        assert!(!r.ok, "expected behavioral rejection: {:?}", r);
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("add_is_correct") || d.message.contains("failed")),
+            "expected a diagnostic naming the failing test or failure: {:?}",
             r.diagnostics
         );
     }

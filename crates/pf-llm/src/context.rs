@@ -32,7 +32,20 @@ impl<'a> ContextSelector<'a> {
         for _ in 0..=hops {
             let mut next: Vec<String> = Vec::new();
             for id in &frontier {
-                for fact in self.graph.all_facts() {
+                // Iterate over a deterministically-ordered snapshot. The
+                // graph uses a `HashMap` internally, and on a large
+                // enough graph the iteration order varies *across calls*
+                // in the same process — which silently breaks the
+                // response cache (identical params but a different
+                // prompt render → cache miss). Sorting keeps every
+                // repeated call byte-identical.
+                let mut facts: Vec<&Fact> = self.graph.all_facts().collect();
+                facts.sort_by(|a, b| {
+                    a.predicate
+                        .cmp(&b.predicate)
+                        .then_with(|| a.args.cmp(&b.args))
+                });
+                for fact in facts {
                     if !is_trusted(fact.layer) {
                         continue;
                     }

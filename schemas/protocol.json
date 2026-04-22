@@ -222,7 +222,7 @@
           },
           "validation_profile": {
             "type": ["string", "null"],
-            "enum": ["default", "typed", null],
+            "enum": ["default", "typed", "tested", null],
             "description": "Selects the validation pipeline. `default` runs syntactic + rules; `typed` additionally runs cargo_check."
           }
         }
@@ -439,7 +439,7 @@
           },
           "validation_profile": {
             "type": ["string", "null"],
-            "enum": ["default", "typed", null]
+            "enum": ["default", "typed", "tested", null]
           }
         }
       },

@@ -224,6 +224,12 @@ def main() -> int:
             },
         })
         prev = recv(proc)["result"]
+        # 3 renameable occurrences in real expression positions. The two
+        # `add(...)` occurrences inside `assert_eq!(...)` macros are not
+        # renamed — syn does not descend into macro token trees, and the
+        # current rename is not scope-aware (rust-analyzer integration is
+        # Phase 2). This is deliberately a demo: the `typed` profile
+        # below catches the mismatch that the default profile does not.
         assert prev["total_replacements"] == 3, prev
         assert len(prev["files"]) == 1, prev
         diff = prev["files"][0]["diff"]
@@ -450,10 +456,14 @@ def main() -> int:
             scratch3_demo, ".prolog-forge/journal", f"{commit_id}.json"
         )), "rollback must delete journal entry"
 
-        # ---- validation_profile = "typed": cargo check stage on a valid
-        # rename must run and pass. This proves the typed pipeline is
-        # wired end-to-end and that the verdict upgrades from "not_proven"
-        # to "accepted".
+        # ---- validation_profile = "typed": cargo_check catches a
+        # rename the syntactic stage cannot. Renaming `add -> sum` works
+        # at the token level in function bodies, but the two `add(...)`
+        # occurrences inside `assert_eq!(...)` are macro token trees and
+        # are not rewritten. The shadow therefore has `fn sum` defined
+        # while the tests still call `add`. cargo check finds the
+        # unresolved reference and rejects the apply. This is exactly
+        # the value-add of the typed profile.
         scratch4_root = tempfile.mkdtemp(prefix="pf-smoke-typed-")
         scratch4_demo = os.path.join(scratch4_root, "demo")
         shutil.copytree("examples/rust-demo", scratch4_demo)
@@ -473,36 +483,76 @@ def main() -> int:
                         "new_name": "sum",
                         "files": [],
                     }],
-                    "label": "smoke: typed apply",
+                    "label": "smoke: typed apply (expected to fail)",
                 },
                 "validation_profile": "typed",
             },
         })
         typed = recv(proc)["result"]
-        assert typed["applied"] is True, typed
+        assert typed["applied"] is False, typed
         stage_names = [s["stage"] for s in typed["validation"]["stages"]]
         assert "cargo_check" in stage_names, typed
         cargo_stage = next(
             s for s in typed["validation"]["stages"] if s["stage"] == "cargo_check"
         )
-        assert cargo_stage["ok"] is True, cargo_stage
+        assert cargo_stage["ok"] is False, cargo_stage
+        assert any(
+            "add" in d["message"].lower() or "function" in d["message"].lower()
+            or "not found" in d["message"].lower() or "cannot find" in d["message"].lower()
+            or "E0425" in d["message"]
+            for d in cargo_stage["diagnostics"]
+        ), cargo_stage
+        # FS must be untouched.
+        with open(os.path.join(scratch4_demo, "src/lib.rs")) as f:
+            assert "pub fn add(" in f.read(), "typed reject must not touch disk"
 
-        # Same scratch, fresh open: explain.patch with profile=typed on a
-        # clean plan must yield a verdict of `accepted` (cargo_check
-        # supplies the semantic evidence the syntactic stage alone could
-        # not). Use a no-op rename so the shadow stays identical to disk.
+        # Same scratch, fresh open: rename a function with no macro-body
+        # references (`useless`, zero callers) under profile=typed.
+        # Expect apply + cargo_check green. This upgrades the verdict
+        # from `not_proven` to `accepted`.
         send(proc, {
             "jsonrpc": "2.0", "id": 28, "method": "workspace.open",
             "params": {"root": scratch4_demo},
         })
+        ws_typed2 = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 29, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_typed2,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "useless",
+                        "new_name": "blank",
+                        "files": [],
+                    }],
+                    "label": "smoke: typed apply (expected to pass)",
+                },
+                "validation_profile": "typed",
+            },
+        })
+        typed2 = recv(proc)["result"]
+        assert typed2["applied"] is True, typed2
+        cargo_stage2 = next(
+            s for s in typed2["validation"]["stages"] if s["stage"] == "cargo_check"
+        )
+        assert cargo_stage2["ok"] is True, cargo_stage2
+
+        # explain.patch on the same clean plan must synthesize an
+        # `accepted` verdict (cargo_check supplies the semantic evidence
+        # the syntactic stage alone could not).
+        send(proc, {
+            "jsonrpc": "2.0", "id": 30, "method": "workspace.open",
+            "params": {"root": scratch4_demo},
+        })
         ws_typed_explain = recv(proc)["result"]["workspace_id"]
         send(proc, {
-            "jsonrpc": "2.0", "id": 29, "method": "workspace.index",
+            "jsonrpc": "2.0", "id": 31, "method": "workspace.index",
             "params": {"workspace_id": ws_typed_explain},
         })
         recv(proc)
         send(proc, {
-            "jsonrpc": "2.0", "id": 30, "method": "explain.patch",
+            "jsonrpc": "2.0", "id": 32, "method": "explain.patch",
             "params": {
                 "workspace_id": ws_typed_explain,
                 "plan": {
@@ -520,19 +570,56 @@ def main() -> int:
         })
         typed_explain = recv(proc)["result"]
         assert typed_explain["verdict"]["kind"] == "accepted", typed_explain
-        evidence_kinds = {e["kind"] for e in typed_explain["evidence"]}
-        assert "stage" in evidence_kinds, typed_explain
         stage_names2 = [
             e["name"] for e in typed_explain["evidence"] if e["kind"] == "stage"
         ]
         assert "cargo_check" in stage_names2, typed_explain
 
+        # ---- validation_profile = "tested": cargo_test runs against
+        # the shadow. `useless -> blank` is a no-op for behavior (zero
+        # callers, no test depends on it), so the existing tests stay
+        # green and the apply should succeed.
+        scratch5_root = tempfile.mkdtemp(prefix="pf-smoke-tested-")
+        scratch5_demo = os.path.join(scratch5_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch5_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 33, "method": "workspace.open",
+            "params": {"root": scratch5_demo},
+        })
+        ws_tested = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 34, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_tested,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "useless",
+                        "new_name": "blank",
+                        "files": [],
+                    }],
+                    "label": "smoke: tested apply",
+                },
+                "validation_profile": "tested",
+            },
+        })
+        tested = recv(proc)["result"]
+        assert tested["applied"] is True, tested
+        tested_stage_names = [s["stage"] for s in tested["validation"]["stages"]]
+        assert "cargo_check" in tested_stage_names, tested
+        assert "cargo_test" in tested_stage_names, tested
+        cargo_test_stage = next(
+            s for s in tested["validation"]["stages"] if s["stage"] == "cargo_test"
+        )
+        assert cargo_test_stage["ok"] is True, cargo_test_stage
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)
         shutil.rmtree(scratch4_root, ignore_errors=True)
+        shutil.rmtree(scratch5_root, ignore_errors=True)
 
-        send(proc, {"jsonrpc": "2.0", "id": 31, "method": "session.shutdown"})
+        send(proc, {"jsonrpc": "2.0", "id": 99, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")

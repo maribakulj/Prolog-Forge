@@ -11,15 +11,18 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 7** — everything from step 6 plus a
-> **type-aware validation stage** (`CargoCheckStage`: mirrors the
-> workspace to a temp dir, overlays the shadow files, runs
-> `cargo check --message-format=json`, and parses compiler errors into
-> structured `Diagnostic`s). Enabled via `validation_profile = "typed"`
-> on `patch.apply` and `explain.patch`, and `pf rename --typecheck` on
-> the CLI. This is what converts an `explain.patch` verdict from
-> `not_proven` to `accepted` — the runtime now *proves* patches
-> type-check rather than just parse. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 8** — everything from step 7 plus a
+> **behavioral validation stage** (`CargoTestStage`: same shadow-copy
+> mechanics as `cargo_check`, runs `cargo test --no-fail-fast`, parses
+> the libtest `test X ... FAILED` lines into one diagnostic per
+> failing test). Enabled via `validation_profile = "tested"` on
+> `patch.apply` / `explain.patch` and `pf rename --run-tests` on the
+> CLI. The typed pipeline now catches a real class of bugs the
+> syntactic stage cannot (macro-body identifiers the rename doesn't
+> rewrite are surfaced as `cargo check` errors), and the tested
+> pipeline additionally proves the patch preserves observable
+> behavior. Failure names from `cargo_test` feed into `llm.refine` as
+> structured prior diagnostics. See [Roadmap](#roadmap).
 
 ---
 
@@ -74,7 +77,8 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     │   └── refinement  (Phase 1.6 ✓, iterative llm.refine)
                                     ├── patch planner    (Phase 1.3 ✓)
                                     ├── validator        (Phase 1.4–5 ✓, syntactic + rule)
-                                    │   └── typed profile (Phase 1.7 ✓, cargo_check)
+                                    │   ├── typed profile (Phase 1.7 ✓, cargo_check)
+                                    │   └── tested profile (Phase 1.8 ✓, cargo_test)
                                     ├── commit journal   (Phase 1.5 ✓, JSON on disk)
                                     └── explainer        (Phase 1.6 ✓, proof-carrying patches)
 ```
@@ -280,7 +284,11 @@ Every `patch.apply` goes through three gates:
    Passing `validation_profile = "typed"` additionally runs
    `CargoCheckStage`, which materialises the shadow files in a temp
    directory and shells out to `cargo check`; compiler errors become
-   structured diagnostics.
+   structured diagnostics. Passing `validation_profile = "tested"`
+   layers `CargoTestStage` on top — `cargo test --no-fail-fast` against
+   the shadow, with one diagnostic per failing test — so a patch only
+   lands if the existing test suite still goes green under the
+   proposed source.
 2. **Preflight check**. Before writing, the current on-disk content of
    every target is compared against the bytes the plan was rendered
    against. If anything drifted in between, the apply is aborted with an
@@ -423,7 +431,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.5** | `RuleStage` (`violation/*` apply-gate), disk-persistent commit journal, `patch.rollback`, `pf rollback` CLI | **shipped** |
 | **1.6** | `pf-explain` + `explain.patch` (proof-carrying patches), `llm.refine` (iterative `candidate → diagnostics → revised candidate` loop), `pf explain` / `pf refine` CLI | **shipped** |
 | **1.7** | `CargoCheckStage` (type-aware validation profile: shadow copy + `cargo check` + JSON-parsed diagnostics), `validation_profile = "typed"` on `patch.apply` / `explain.patch`, `pf rename --typecheck` | **shipped** |
-| 1.8 (MVP rest) | Type-aware **rename** (rust-analyzer, scope-resolved), behavioral validation stage (test impact), VS Code adapter minimal | 2–3 months |
+| **1.8** | `CargoTestStage` (behavioral validation profile: shadow copy + `cargo test --no-fail-fast` + libtest-line parsing → one diagnostic per failing test), `validation_profile = "tested"`, `pf rename --run-tests` | **shipped** |
+| 1.9 (MVP rest) | Type-aware **rename** (rust-analyzer, scope-resolved), impacted-tests selection (instead of the whole suite), VS Code adapter minimal | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |
