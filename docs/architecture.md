@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 10 (macro-aware rename: Step 1 of type-aware)
+## Current state — Phase 1 step 11 (scope-resolved rename: Step 2 of type-aware)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -21,7 +21,8 @@ JSON-RPC.
 | `pf-ingest` | Filesystem walker, source-file dispatch. |
 | `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
 | `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only, deterministic ordering), prompt builder, content-addressed response cache, identifier-resolution guard. Three LLM modes: `propose` (fact candidates), `refine` (iterative revision with prior rejections + diagnostics), and `propose_patch` (typed `PatchPlan` candidates grounded against the op vocabulary). |
-| `pf-patch` | Typed patch planner: `PatchOp` (RenameFunction so far), `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
+| `pf-patch` | Typed patch planner: `PatchOp` (`RenameFunction` macro-aware, `RenameFunctionTyped` scope-resolved via rust-analyzer), `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
+| `pf-ra-client` | Minimal LSP client for rust-analyzer: Content-Length framing, spawn / initialize / rename / shutdown, in-process mock server for tests. Graceful degradation when RA is absent — the caller receives `ClientError::NotAvailable` and falls back to the syntactic path. |
 | `pf-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. Semantic stages (`RuleStage`, `CargoCheckStage`, `CargoTestStage`) live in `pf-core` where the dependencies they need are available. |
 | `pf-explain` | Proof-carrying explainer: composes observed / inferred / candidate evidence, rule activations (head + premises via `pf_rules::trace_derivations`), and validation stage outcomes into a single `Explanation` with a synthesized verdict. Pure; no I/O. |
 | `pf-core` | Session/workspace manager, API dispatcher, CSM→fact lowering, `workspace.index`, `llm.propose`, `llm.refine`, `patch.preview`, `patch.apply` (+ `RuleStage`, disk-persistent commit journal), `patch.rollback`, `explain.patch`. |
@@ -124,7 +125,7 @@ slot on top of this loop in the following steps.
 - Behavioral stage (run impacted tests).
 - Content-addressed journal (current format is plain JSON and stores full before/after bytes per file — fine at MVP scale, compressed CAS coming with the disk-backed `pf-persist`).
 - Cross-commit rollback (Phase 1.5 rollback is single-commit; a redo/undo stack arrives later).
-- Scope-aware rename (requires rust-analyzer, Phase 2 — Step 2 of the three-step ladder in `crates/pf-patch/src/rust_rename.rs`). The current Phase 1.10 rename is macro-aware (descends into `assert_eq!` / `vec!` / … bodies, skips `macro_rules!` meta-var grammar) but still not scope-resolved: a shadow-binding local of the same name would still be renamed.
+- **Rust-analyzer in CI.** The `pf-ra-client` crate is end-to-end tested against the real `rust-analyzer` binary only when one is on `PATH` (the test self-skips otherwise). The CI host used while Phase 1.11 was shipped does not carry RA, so the typed-rename path is CI-verified through the in-process mock only; the real-binary round-trip is exercised locally. Persistent RA indexing (keep one session alive across requests) is a Phase 2 follow-up — today each typed rename spawns a fresh RA.
 - Patch planning / application (minimal).
 - Persistence to disk.
 - Notifications / streaming / cancellation.

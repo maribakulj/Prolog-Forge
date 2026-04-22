@@ -15,6 +15,7 @@ members = [
     "crates/pf-patch",
     "crates/pf-validate",
     "crates/pf-explain",
+    "crates/pf-ra-client",
     "crates/pf-core",
     "crates/pf-daemon",
     "crates/pf-cli",
@@ -49,6 +50,7 @@ pf-llm = { path = "crates/pf-llm" }
 pf-patch = { path = "crates/pf-patch" }
 pf-validate = { path = "crates/pf-validate" }
 pf-explain = { path = "crates/pf-explain" }
+pf-ra-client = { path = "crates/pf-ra-client" }
 pf-core = { path = "crates/pf-core" }
 
 [profile.release]

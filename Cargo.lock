@@ -292,7 +292,9 @@ dependencies = [
  "pf-core",
  "pf-protocol",
  "pf-rules",
+ "proc-macro2",
  "serde_json",
+ "syn",
 ]
 
 [[package]]
@@ -393,11 +395,13 @@ dependencies = [
 name = "pf-patch"
 version = "0.0.1"
 dependencies = [
+ "pf-ra-client",
  "proc-macro2",
  "serde",
  "serde_json",
  "similar",
  "syn",
+ "tempfile",
  "thiserror",
 ]
 
@@ -416,6 +420,16 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "pf-ra-client"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

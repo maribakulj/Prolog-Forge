@@ -678,6 +678,61 @@ def main() -> int:
 
         shutil.rmtree(scratch6_root, ignore_errors=True)
 
+        # ---- Phase 1.11 Step 2: scope-resolved rename via rust-analyzer.
+        # The op is opt-in through the new `rename_function_typed`
+        # variant. In CI here rust-analyzer isn't installed, so we
+        # assert the *graceful-degradation* path: the preview must
+        # return with a per-file PreviewError that names
+        # rust-analyzer, and the filesystem must remain untouched.
+        # Hosts with RA on PATH would instead return a diff — that
+        # path is exercised by `cargo test -p pf-ra-client` against
+        # the real binary.
+        scratch7_root = tempfile.mkdtemp(prefix="pf-smoke-typed-rename-")
+        scratch7_demo = os.path.join(scratch7_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch7_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 50, "method": "workspace.open",
+            "params": {"root": scratch7_demo},
+        })
+        ws_typed_rn = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 51, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws_typed_rn,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function_typed",
+                        "decl_file": "src/lib.rs",
+                        "decl_line": 2,
+                        "decl_character": 7,
+                        "new_name": "sum",
+                        "old_name": "add",
+                    }],
+                    "label": "smoke: scope-resolved add -> sum",
+                },
+            },
+        })
+        typed_rn_prev = recv(proc)["result"]
+        # Two valid outcomes: either RA is installed and the preview
+        # succeeds with at least one file change, or RA is absent and
+        # the preview reports a PreviewError naming it. Both paths
+        # confirm the typed variant is wired end-to-end; neither path
+        # may panic or silently no-op without a diagnostic.
+        if typed_rn_prev["files"]:
+            # RA present — the preview must rewrite lib.rs.
+            changed = [f["path"] for f in typed_rn_prev["files"]]
+            assert "src/lib.rs" in changed, typed_rn_prev
+        else:
+            assert typed_rn_prev["errors"], typed_rn_prev
+            assert any(
+                "rust-analyzer" in e["message"] or "rename_function_typed" in e["message"]
+                for e in typed_rn_prev["errors"]
+            ), typed_rn_prev
+        # FS must be untouched either way (preview never writes).
+        with open(os.path.join(scratch7_demo, "src/lib.rs")) as f:
+            assert "pub fn add(" in f.read(), "typed preview must not touch disk"
+        shutil.rmtree(scratch7_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

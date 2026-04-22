@@ -19,6 +19,8 @@
 pub mod ops;
 pub mod plan;
 pub mod rust_rename;
+pub mod typed_rename;
 
 pub use ops::{PatchOp, PatchPlan};
-pub use plan::{preview, FilePatch, PatchError, PatchPreview};
+pub use plan::{apply_plan, preview, FilePatch, PatchError, PatchPreview};
+pub use typed_rename::{resolve as resolve_typed_rename, TypedRenameError, TypedRenameRequest};

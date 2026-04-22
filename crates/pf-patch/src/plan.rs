@@ -50,6 +50,26 @@ pub enum PatchError {
     Unsupported,
 }
 
+/// Apply every op in `plan` to a working copy of `files` and return the
+/// resulting shadow map plus any per-op errors. Shared between
+/// [`preview`] (which additionally renders diffs) and the `pf-core`
+/// apply/explain paths (which need the shadow map directly and cannot
+/// reconstruct it from a diff). Centralising op handling here keeps
+/// typed-vs-syntactic rename semantics in one place.
+pub fn apply_plan(
+    plan: &PatchPlan,
+    files: &BTreeMap<String, String>,
+) -> (BTreeMap<String, String>, Vec<PreviewError>) {
+    let mut working: BTreeMap<String, String> = files.clone();
+    let mut per_file_replacements: BTreeMap<String, usize> = BTreeMap::new();
+    let mut errors: Vec<PreviewError> = Vec::new();
+    for op in &plan.ops {
+        apply_op(op, &mut working, &mut per_file_replacements, &mut errors);
+    }
+    let _ = per_file_replacements;
+    (working, errors)
+}
+
 pub fn preview(
     plan: &PatchPlan,
     files: &BTreeMap<String, String>,
@@ -123,6 +143,52 @@ fn apply_op(
                         message: msg,
                     }),
                 }
+            }
+        }
+        PatchOp::RenameFunctionTyped {
+            decl_file,
+            decl_line,
+            decl_character,
+            new_name,
+            old_name: _,
+        } => {
+            // Delegate to rust-analyzer. When RA is unavailable, emit a
+            // preview-level diagnostic and leave the shadow untouched.
+            // This matches the "oracle absent → warn + pass" pattern
+            // used by CargoCheckStage and keeps the pipeline honest.
+            match crate::typed_rename::resolve(crate::typed_rename::TypedRenameRequest {
+                files: working,
+                decl_file,
+                decl_line: *decl_line,
+                decl_character: *decl_character,
+                new_name,
+                timeout: std::time::Duration::from_secs(60),
+            }) {
+                Ok(new_files) => {
+                    // Count changed files so the preview's `replacements`
+                    // total stays comparable to the syntactic path.
+                    for (rel, content) in &new_files {
+                        if working.get(rel) != Some(content) {
+                            *replacements.entry(rel.clone()).or_insert(0) += 1;
+                        }
+                    }
+                    *working = new_files;
+                }
+                Err(crate::typed_rename::TypedRenameError::Unavailable(msg)) => {
+                    errors.push(PreviewError {
+                        file: decl_file.clone(),
+                        message: format!(
+                            "rename_function_typed: rust-analyzer not available ({msg}); \
+                             install rust-analyzer on PATH to use the scope-resolved variant, \
+                             or fall back to `rename_function` for a macro-aware (but not \
+                             scope-aware) rename"
+                        ),
+                    });
+                }
+                Err(e) => errors.push(PreviewError {
+                    file: decl_file.clone(),
+                    message: format!("rename_function_typed: {e}"),
+                }),
             }
         }
     }

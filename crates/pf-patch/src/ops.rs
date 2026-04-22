@@ -29,6 +29,34 @@ pub enum PatchOp {
         #[serde(default)]
         files: Vec<String>,
     },
+    /// Step 2 of the type-aware rename ladder (see
+    /// `crates/pf-patch/src/rust_rename.rs` for the full map): delegate
+    /// the rename to `rust-analyzer` via LSP. The caller names a
+    /// declaration site (file + 0-indexed line/character of any
+    /// occurrence of the symbol) and the new identifier; RA returns the
+    /// exact set of scope-resolved text edits to apply.
+    ///
+    /// This variant requires `rust-analyzer` on `PATH`. When it is
+    /// absent, the patch pipeline degrades gracefully: the op is
+    /// skipped and a diagnostic explains why (same pattern used by
+    /// `CargoCheckStage` when `cargo` is missing).
+    RenameFunctionTyped {
+        /// Workspace-relative path of any file that contains an
+        /// occurrence of the symbol (typically the declaration site).
+        decl_file: String,
+        /// 0-indexed line within `decl_file`.
+        decl_line: u32,
+        /// 0-indexed character offset within the line. Must fall inside
+        /// the identifier so rust-analyzer can resolve the symbol.
+        decl_character: u32,
+        /// New identifier name.
+        new_name: String,
+        /// Informative only — the old name is not needed by RA (it
+        /// resolves by position) but keeping it in the wire shape makes
+        /// the op self-describing in logs and proof trees.
+        #[serde(default)]
+        old_name: String,
+    },
 }
 
 /// A `PatchPlan` is an ordered sequence of ops plus auditable metadata.

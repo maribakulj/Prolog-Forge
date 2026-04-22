@@ -199,9 +199,39 @@ fn validate_plan(plan: &PlanShape, known_function_names: &HashSet<String>) -> Re
                     ));
                 }
             }
+            "rename_function_typed" => {
+                // Step 2 of the type-aware rename ladder. The op
+                // resolves by declaration-site position, so the LLM
+                // must supply `decl_file`, `decl_line`,
+                // `decl_character`, and the new identifier. `old_name`
+                // is informative only but, when present, must resolve.
+                for field in ["decl_file", "new_name"] {
+                    raw.get(field).and_then(|v| v.as_str()).ok_or_else(|| {
+                        format!("op[{idx}] rename_function_typed missing `{field}` string")
+                    })?;
+                }
+                for field in ["decl_line", "decl_character"] {
+                    raw.get(field).and_then(|v| v.as_u64()).ok_or_else(|| {
+                        format!("op[{idx}] rename_function_typed missing `{field}` unsigned int")
+                    })?;
+                }
+                let new_name = raw.get("new_name").and_then(|v| v.as_str()).unwrap_or("");
+                if new_name.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] rename_function_typed: `new_name` must be non-empty"
+                    ));
+                }
+                if let Some(old) = raw.get("old_name").and_then(|v| v.as_str()) {
+                    if !old.is_empty() && !known_function_names.contains(old) {
+                        return Err(format!(
+                            "op[{idx}] rename_function_typed: unknown identifier `{old}` (hallucination)"
+                        ));
+                    }
+                }
+            }
             other => {
                 return Err(format!(
-                    "op[{idx}] unknown op tag `{other}` (known: rename_function)"
+                    "op[{idx}] unknown op tag `{other}` (known: rename_function, rename_function_typed)"
                 ));
             }
         }

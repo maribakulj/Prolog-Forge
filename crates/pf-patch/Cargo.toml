@@ -12,3 +12,5 @@ thiserror.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 similar = "2.7"
+pf-ra-client.workspace = true
+tempfile = "3"

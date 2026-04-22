@@ -461,45 +461,16 @@ fn build_pipeline(
     Ok(stages)
 }
 
+/// Thin wrapper around `pf_patch::apply_plan` so the `apply` and
+/// `explain` handlers share the same single op-dispatch path as
+/// `preview`. Keeping all op semantics (including the typed-rename
+/// fallback when rust-analyzer is absent) in `pf-patch` avoids
+/// bit-rot where `build_shadow` drifts behind the preview walk.
 fn build_shadow(
     plan: &pf_patch::PatchPlan,
     original: &std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
-    let mut working = original.clone();
-    for op in &plan.ops {
-        match op {
-            pf_patch::PatchOp::RenameFunction {
-                old_name,
-                new_name,
-                files,
-            } => {
-                let paths: Vec<String> = if files.is_empty() {
-                    working
-                        .keys()
-                        .filter(|p| p.ends_with(".rs"))
-                        .cloned()
-                        .collect()
-                } else {
-                    files
-                        .iter()
-                        .filter(|p| working.contains_key(p.as_str()))
-                        .cloned()
-                        .collect()
-                };
-                for path in paths {
-                    if let Some(src) = working.get(&path).cloned() {
-                        if let Ok((new_src, n)) =
-                            pf_patch::rust_rename::rename(&src, old_name, new_name)
-                        {
-                            if n > 0 {
-                                working.insert(path, new_src);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (working, _errors) = pf_patch::apply_plan(plan, original);
     working
 }
 
@@ -833,6 +804,18 @@ fn anchors_from_ops(ops: &[pf_patch::PatchOp]) -> Vec<String> {
                 old_name, new_name, ..
             } => {
                 out.push(old_name.clone());
+                out.push(new_name.clone());
+            }
+            pf_patch::PatchOp::RenameFunctionTyped {
+                old_name, new_name, ..
+            } => {
+                // `old_name` is informative on the typed variant (RA
+                // resolves by position) but we still emit it as an
+                // anchor so the explainer surfaces the same observed
+                // facts it would for the syntactic rename.
+                if !old_name.is_empty() {
+                    out.push(old_name.clone());
+                }
                 out.push(new_name.clone());
             }
         }

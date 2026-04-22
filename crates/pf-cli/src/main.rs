@@ -92,6 +92,14 @@ enum Cmd {
         /// slower than the default.
         #[arg(long)]
         run_tests: bool,
+        /// Use `rust-analyzer` for scope-resolved rename (Step 2 of
+        /// the type-aware rename ladder). Distinguishes a local
+        /// variable `add` from a function `add`; only renames actual
+        /// references to the symbol. Requires `rust-analyzer` on
+        /// PATH. When RA is absent, the op is skipped with a
+        /// diagnostic (use the default macro-aware rename instead).
+        #[arg(long)]
+        scope_resolved: bool,
     },
     /// Roll back a previously applied commit, restoring the workspace to
     /// its pre-commit state. Refuses if the on-disk content no longer
@@ -220,7 +228,8 @@ fn main() -> Result<()> {
             apply,
             typecheck,
             run_tests,
-        } => cmd_rename(root, from, to, apply, typecheck, run_tests),
+            scope_resolved,
+        } => cmd_rename(root, from, to, apply, typecheck, run_tests, scope_resolved),
         Cmd::Rollback { root, commit_id } => cmd_rollback(root, commit_id),
     }
 }
@@ -261,6 +270,88 @@ fn cmd_rollback(root: PathBuf, commit_id: String) -> Result<()> {
     }
 }
 
+/// Walk `.rs` files under `root` and return `(relative_path, 0-indexed
+/// line, 0-indexed character)` for the first `fn <name>` declaration we
+/// find. Used by `pf rename --scope-resolved` to hand rust-analyzer a
+/// position to resolve the symbol from. Returns `None` if no matching
+/// declaration is found — the caller turns that into a clear error so
+/// the user knows to check the name or fall back to the syntactic
+/// rename.
+fn find_fn_decl(root: &std::path::Path, name: &str) -> Option<(String, u32, u32)> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let file_name = entry.file_name();
+            let name_s = file_name.to_string_lossy();
+            if p.is_dir() {
+                if name_s == "target" || name_s == ".prolog-forge" || name_s == ".git" {
+                    continue;
+                }
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(src) = fs::read_to_string(&p) else {
+                continue;
+            };
+            if let Some((line, character)) = find_fn_in_source(&src, name) {
+                let rel = p.strip_prefix(root).ok()?.to_string_lossy().into_owned();
+                return Some((rel, line, character));
+            }
+        }
+    }
+    None
+}
+
+/// Parse `src` with syn, visit every `ItemFn` / `ImplItemFn` / `TraitItemFn`,
+/// and return the position of the first identifier whose string equals
+/// `name`. 0-indexed line + character to match LSP's position shape.
+fn find_fn_in_source(src: &str, name: &str) -> Option<(u32, u32)> {
+    use syn::visit::Visit;
+    struct Finder<'a> {
+        name: &'a str,
+        found: Option<(u32, u32)>,
+    }
+    impl<'a, 'ast> Visit<'ast> for Finder<'a> {
+        fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
+            self.check(&i.sig.ident);
+            syn::visit::visit_item_fn(self, i);
+        }
+        fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
+            self.check(&i.sig.ident);
+            syn::visit::visit_impl_item_fn(self, i);
+        }
+        fn visit_trait_item_fn(&mut self, i: &'ast syn::TraitItemFn) {
+            self.check(&i.sig.ident);
+            syn::visit::visit_trait_item_fn(self, i);
+        }
+    }
+    impl<'a> Finder<'a> {
+        fn check(&mut self, ident: &proc_macro2::Ident) {
+            if self.found.is_some() || ident != self.name {
+                return;
+            }
+            let span = ident.span();
+            let start = span.start();
+            // `proc_macro2::LineColumn::line` is 1-indexed, `column`
+            // is 0-indexed byte offset on the line. LSP wants both
+            // 0-indexed; for ASCII Rust identifiers byte == UTF-16
+            // code-unit count, so we pass column through unchanged.
+            if start.line >= 1 {
+                self.found = Some(((start.line - 1) as u32, start.column as u32));
+            }
+        }
+    }
+    let file = syn::parse_file(src).ok()?;
+    let mut f = Finder { name, found: None };
+    f.visit_file(&file);
+    f.found
+}
+
 fn cmd_rename(
     root: PathBuf,
     from: String,
@@ -268,6 +359,7 @@ fn cmd_rename(
     apply: bool,
     typecheck: bool,
     run_tests: bool,
+    scope_resolved: bool,
 ) -> Result<()> {
     let core = Core::new();
     let resp = call(
@@ -279,15 +371,39 @@ fn cmd_rename(
     )?;
     let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
 
-    let op = serde_json::json!({
-        "op": "rename_function",
-        "old_name": from,
-        "new_name": to,
-        "files": []
-    });
+    let op = if scope_resolved {
+        // Locate any `fn <from>` declaration to hand RA a position.
+        // Syn gives us line+column (0-indexed line, 0-indexed UTF-16
+        // character) on the identifier span; LSP wants the same shape.
+        let (decl_file, line, character) = find_fn_decl(&root, &from).ok_or_else(|| {
+            anyhow::anyhow!(
+                "scope-resolved rename: no `fn {from}` declaration found under {}",
+                root.display()
+            )
+        })?;
+        serde_json::json!({
+            "op": "rename_function_typed",
+            "decl_file": decl_file,
+            "decl_line": line,
+            "decl_character": character,
+            "new_name": to,
+            "old_name": from,
+        })
+    } else {
+        serde_json::json!({
+            "op": "rename_function",
+            "old_name": from,
+            "new_name": to,
+            "files": []
+        })
+    };
     let plan = PatchPlanDto {
         ops: vec![op],
-        label: format!("rename {from} -> {to}"),
+        label: if scope_resolved {
+            format!("rename {from} -> {to} (scope-resolved)")
+        } else {
+            format!("rename {from} -> {to}")
+        },
     };
 
     // Always show the preview first so the user sees what will happen.
