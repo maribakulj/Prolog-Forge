@@ -142,6 +142,7 @@ pub const METHOD_RULES_LIST: &str = "rules.list";
 
 pub const METHOD_LLM_PROPOSE: &str = "llm.propose";
 pub const METHOD_LLM_REFINE: &str = "llm.refine";
+pub const METHOD_LLM_PROPOSE_PATCH: &str = "llm.propose_patch";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmProposeParams {
@@ -240,6 +241,46 @@ pub struct RefineRoundSummary {
     pub cache_hit: bool,
     pub tokens_in: u32,
     pub tokens_out: u32,
+}
+
+// ---------- llm.propose_patch ---------------------------------------------
+//
+// Asks the bounded LLM orchestrator to produce typed *patch plans* rather
+// than fact candidates. Closes the LLM -> symbolic loop end-to-end: the
+// returned plans are consumable by `patch.preview`, `patch.apply`, and
+// `explain.patch` without any translation step.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProposePatchParams {
+    pub workspace_id: WorkspaceId,
+    pub intent: String,
+    pub anchor_id: String,
+    #[serde(default = "default_hops")]
+    pub hops: usize,
+    #[serde(default = "default_max_facts")]
+    pub max_facts: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProposePatchResult {
+    pub accepted: usize,
+    pub rejected: usize,
+    pub cache_hit: bool,
+    pub tokens_in: u32,
+    pub tokens_out: u32,
+    pub candidates: Vec<PatchCandidateDto>,
+}
+
+/// One proposed plan plus the LLM's reason for suggesting it and, when
+/// applicable, the symbolic grounding reason for rejecting it. The plan
+/// is the exact wire shape accepted by `patch.preview` / `patch.apply` /
+/// `explain.patch` — no translation step required on the caller side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchCandidateDto {
+    pub plan: PatchPlanDto,
+    pub justification: String,
+    pub accepted: bool,
+    pub rejection_reason: Option<String>,
 }
 
 // ---------- explain.patch -------------------------------------------------

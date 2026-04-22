@@ -14,4 +14,4 @@ pub use transport::*;
 
 /// Current protocol version. Semver: MAJOR breaks wire compat, MINOR is
 /// additive (new methods / new optional fields).
-pub const PROTOCOL_VERSION: &str = "0.8.1";
+pub const PROTOCOL_VERSION: &str = "0.9.0";

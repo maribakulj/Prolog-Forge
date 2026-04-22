@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 8 (tested validation profile: `cargo_test` stage)
+## Current state — Phase 1 step 9 (`llm.propose_patch`: LLM speaks the op vocabulary)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -20,7 +20,7 @@ JSON-RPC.
 | `pf-persist` | KV trait + in-memory backend. Disk-backed store lands in Phase 1 step 2. |
 | `pf-ingest` | Filesystem walker, source-file dispatch. |
 | `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
-| `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only), prompt builder, content-addressed response cache, identifier-resolution guard, one-shot `propose` *and* iterative `refine` pipeline with per-round budget accounting. |
+| `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only, deterministic ordering), prompt builder, content-addressed response cache, identifier-resolution guard. Three LLM modes: `propose` (fact candidates), `refine` (iterative revision with prior rejections + diagnostics), and `propose_patch` (typed `PatchPlan` candidates grounded against the op vocabulary). |
 | `pf-patch` | Typed patch planner: `PatchOp` (RenameFunction so far), `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
 | `pf-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. Semantic stages (`RuleStage`, `CargoCheckStage`, `CargoTestStage`) live in `pf-core` where the dependencies they need are available. |
 | `pf-explain` | Proof-carrying explainer: composes observed / inferred / candidate evidence, rule activations (head + premises via `pf_rules::trace_derivations`), and validation stage outcomes into a single `Explanation` with a synthesized verdict. Pure; no I/O. |
@@ -66,6 +66,8 @@ client  ──►  llm.refine(anchor, intent,
                          prior_outcomes,
                          prior_diagnostics,
                          max_rounds)      ──►  {rounds, converged, outcomes, rounds_summary[]}
+client  ──►  llm.propose_patch(anchor,
+                               intent)    ──►  {accepted, rejected, candidates[{plan, justification, accepted, rejection_reason}]}
 client  ──►  patch.preview(plan)         ──►  {total_replacements, files[], errors[]}
 client  ──►  patch.apply(plan)           ──►  {applied, commit_id, validation, …}
 client  ──►  patch.rollback(commit_id)   ──►  {rolled_back, files_restored, …}

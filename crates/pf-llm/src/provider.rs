@@ -61,6 +61,7 @@ impl LlmProvider for MockProvider {
         let text = match req.schema_id.as_str() {
             "propose.v1" => mock_propose(&req.user),
             "refine.v1" => mock_refine(&req.user),
+            "patch_propose.v1" => mock_propose_patch(&req.user),
             _ => r#"{"candidates":[]}"#.to_string(),
         };
         Ok(LlmResponse {
@@ -115,6 +116,83 @@ fn mock_refine(user: &str) -> String {
         })
         .collect::<Vec<_>>();
     serde_json::json!({ "candidates": proposals }).to_string()
+}
+
+/// The `patch_propose.v1` mock produces typed patch plans rather than
+/// fact candidates. For every function in the context it emits a
+/// `rename_function` op that renames `<name>` to `<name>_renamed` — a
+/// deterministic, non-destructive synthetic refactor that exercises the
+/// full propose → preview → apply pipeline end-to-end. It also emits one
+/// plan with a hallucinated identifier so the symbolic grounding guard
+/// is tested (the validator rejects any op whose `old_name` does not
+/// resolve against the graph).
+fn mock_propose_patch(user: &str) -> String {
+    let mut candidates: Vec<serde_json::Value> = Vec::new();
+    for (_id, name) in context_functions(user) {
+        let label = format!("rename {name} -> {name}_renamed");
+        candidates.push(serde_json::json!({
+            "plan": {
+                "ops": [{
+                    "op": "rename_function",
+                    "old_name": name,
+                    "new_name": format!("{name}_renamed"),
+                    "files": []
+                }],
+                "label": label
+            },
+            "justification": format!("mark {name} as renamed for review"),
+        }));
+    }
+    // One plan on a hallucinated name — exercises the op-resolution guard.
+    candidates.push(serde_json::json!({
+        "plan": {
+            "ops": [{
+                "op": "rename_function",
+                "old_name": "not_a_real_function_anywhere",
+                "new_name": "ghost",
+                "files": []
+            }],
+            "label": "hallucinated rename (expected to be rejected)"
+        },
+        "justification": "intentional hallucination to exercise the op-resolution guard",
+    }));
+    serde_json::json!({ "candidates": candidates }).to_string()
+}
+
+/// Helper: extract `(id, name)` pairs from the rendered context block.
+/// Shared between the plan proposer and the fact proposer family so both
+/// see the same base identifier set.
+fn context_functions(user: &str) -> Vec<(String, String)> {
+    let mut in_context = false;
+    let mut out = Vec::new();
+    for line in user.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Context (") {
+            in_context = true;
+            continue;
+        }
+        if trimmed.starts_with("Prior rejections")
+            || trimmed.starts_with("Prior validator diagnostics")
+            || trimmed.starts_with("Respond with JSON")
+        {
+            in_context = false;
+            continue;
+        }
+        if !in_context {
+            continue;
+        }
+        let trimmed = trimmed.trim_end_matches('.');
+        if let Some(rest) = trimmed.strip_prefix("function(") {
+            if let Some(end) = rest.find(')') {
+                let inner = &rest[..end];
+                let parts: Vec<&str> = inner.splitn(2, ',').map(|s| s.trim()).collect();
+                if parts.len() == 2 {
+                    out.push((parts[0].to_string(), parts[1].to_string()));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Scan the rendered context for `function(<id>, <name>).` lines and emit

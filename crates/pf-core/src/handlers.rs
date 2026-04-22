@@ -21,6 +21,7 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_RULES_EVALUATE => handle_rules_eval(core, params),
         METHOD_LLM_PROPOSE => handle_llm_propose(core, params),
         METHOD_LLM_REFINE => handle_llm_refine(core, params),
+        METHOD_LLM_PROPOSE_PATCH => handle_llm_propose_patch(core, params),
         METHOD_PATCH_PREVIEW => handle_patch_preview(core, params),
         METHOD_PATCH_APPLY => handle_patch_apply(core, params),
         METHOD_PATCH_ROLLBACK => handle_patch_rollback(core, params),
@@ -51,6 +52,7 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_RULES_EVALUATE.into(),
             METHOD_LLM_PROPOSE.into(),
             METHOD_LLM_REFINE.into(),
+            METHOD_LLM_PROPOSE_PATCH.into(),
             METHOD_PATCH_PREVIEW.into(),
             METHOD_PATCH_APPLY.into(),
             METHOD_PATCH_ROLLBACK.into(),
@@ -667,6 +669,49 @@ fn handle_llm_refine(core: &Core, params: Value) -> Result<Value, RpcError> {
                 cache_hit: s.cache_hit,
                 tokens_in: s.tokens_in,
                 tokens_out: s.tokens_out,
+            })
+            .collect(),
+    })
+    .unwrap())
+}
+
+fn handle_llm_propose_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: LlmProposePatchParams = decode(params)?;
+    let result = core
+        .with_workspace(&p.workspace_id, |_ws, st| {
+            pf_llm::propose_patch(
+                core.llm_provider.as_ref(),
+                &core.llm_cache,
+                &st.graph,
+                pf_llm::ProposePatchRequest {
+                    intent: &p.intent,
+                    anchor_id: &p.anchor_id,
+                    hops: p.hops,
+                    max_facts: p.max_facts,
+                    max_tokens: 1024,
+                    temperature: 0.0,
+                },
+            )
+            .map_err(|e| RpcError::internal(e.to_string()))
+        })
+        .map_err(RpcError::invalid_params)??;
+    Ok(serde_json::to_value(LlmProposePatchResult {
+        accepted: result.accepted,
+        rejected: result.rejected,
+        cache_hit: result.cache_hit,
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+        candidates: result
+            .candidates
+            .into_iter()
+            .map(|c| PatchCandidateDto {
+                plan: PatchPlanDto {
+                    ops: c.plan.ops,
+                    label: c.plan.label,
+                },
+                justification: c.justification,
+                accepted: c.accepted,
+                rejection_reason: c.rejection_reason,
             })
             .collect(),
     })

@@ -11,18 +11,18 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 8** — everything from step 7 plus a
-> **behavioral validation stage** (`CargoTestStage`: same shadow-copy
-> mechanics as `cargo_check`, runs `cargo test --no-fail-fast`, parses
-> the libtest `test X ... FAILED` lines into one diagnostic per
-> failing test). Enabled via `validation_profile = "tested"` on
-> `patch.apply` / `explain.patch` and `pf rename --run-tests` on the
-> CLI. The typed pipeline now catches a real class of bugs the
-> syntactic stage cannot (macro-body identifiers the rename doesn't
-> rewrite are surfaced as `cargo check` errors), and the tested
-> pipeline additionally proves the patch preserves observable
-> behavior. Failure names from `cargo_test` feed into `llm.refine` as
-> structured prior diagnostics. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 9** — the LLM now speaks the op vocabulary
+> directly. `llm.propose_patch` asks the bounded orchestrator for
+> *typed `PatchPlan` candidates* (not fact candidates) grounded against
+> the graph's function table and validated against the op registry;
+> every candidate is in the same wire shape `patch.preview` /
+> `patch.apply` / `explain.patch` accept, so there is no translation
+> step between the LLM's proposal and the symbolic side's proof. The
+> new `pf propose-patch` CLI chains *propose → explain.patch* in one
+> command and prints the full verdict (with cargo_check / cargo_test
+> evidence when `--profile typed` or `tested`). This is the point at
+> which the neuro-symbolic loop is closed end-to-end under a single
+> call. See [Roadmap](#roadmap).
 
 ---
 
@@ -74,7 +74,8 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
                                     ├── LLM orchestrator (Phase 1.2 ✓, propose)
-                                    │   └── refinement  (Phase 1.6 ✓, iterative llm.refine)
+                                    │   ├── refinement  (Phase 1.6 ✓, iterative llm.refine)
+                                    │   └── patch proposer (Phase 1.9 ✓, llm.propose_patch)
                                     ├── patch planner    (Phase 1.3 ✓)
                                     ├── validator        (Phase 1.4–5 ✓, syntactic + rule)
                                     │   ├── typed profile (Phase 1.7 ✓, cargo_check)
@@ -208,6 +209,40 @@ produced it. Callers typically wire the output of a rejected
 `patch.apply` (validation diagnostics) or a rejected `llm.propose`
 (hallucinated identifiers) into the next `llm.refine` call, closing the
 feedback loop without any free-form prompting.
+
+### Full neuro-symbolic loop: `pf propose-patch`
+
+```bash
+$ pf propose-patch examples/rust-demo \
+    --anchor 'src/lib.rs#fn:useless@src/lib.rs#file' \
+    --profile typed
+propose_patch: accepted 1 / rejected 1 (cache_hit=false, tokens_in=478, tokens_out=118)
+  [0] ACCEPT rename useless -> useless_renamed — mark useless as renamed for review
+         verdict: accepted
+           note: plan is a preview; no commit recorded
+  [1] REJECT hallucinated rename (expected to be rejected) — intentional hallucination …
+         why: op[0] rename_function: unknown identifier `not_a_real_function_anywhere` (hallucination)
+```
+
+`llm.propose_patch` is the LLM-proposes-transformations mode. The
+orchestrator returns **typed `PatchPlan` candidates** (not fact
+candidates) whose shape is exactly the one `patch.preview` / `patch.apply`
+/ `explain.patch` accept — no translation layer. Each candidate is:
+
+- **op-validated** — every op must be a known variant of `PatchOp`
+  (currently `rename_function`; the vocabulary grows per phase); unknown
+  ops are rejected with a structured reason that names the index and the
+  bad tag.
+- **identifier-grounded** — the `old_name` of every `rename_function` op
+  must exist as a `function/2` fact in the graph. Hallucinated names are
+  rejected with a reason that downstream adapters (and the web explainer,
+  eventually) can display verbatim.
+- **immediately explainable** — the CLI chains `explain.patch` on every
+  accepted candidate, so the output is a full proof-carrying verdict in
+  one command. The `--profile` flag selects the validation pipeline
+  (`default` | `typed` | `tested`), making this the direct end-to-end
+  demonstration of the thesis: LLM explores, symbolic constrains,
+  validator oracles, explainer articulates.
 
 ### Proof-carrying patches: `explain.patch`
 
@@ -352,6 +387,7 @@ CI and is the minimal reference client.
 | `rules.evaluate` | Run the engine to fixpoint. |
 | `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
 | `llm.refine` | Iterative refinement loop: rejections + diagnostics fed back to the model round after round until convergence or `max_rounds`. |
+| `llm.propose_patch` | Bounded LLM proposal of *typed `PatchPlan`s* grounded against the op vocabulary. Same wire shape as `patch.preview` / `explain.patch` — no translation step. |
 | `patch.preview` | Simulate a typed `PatchPlan` against the workspace, return per-file unified diffs. FS untouched. |
 | `patch.apply` | Validate + preflight + atomic write + journal. Returns `{applied, commit_id, validation, rejection_reason}`. |
 | `patch.rollback` | Restore a committed patch. Preflight + atomic restore + journal delete. |
@@ -432,7 +468,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.6** | `pf-explain` + `explain.patch` (proof-carrying patches), `llm.refine` (iterative `candidate → diagnostics → revised candidate` loop), `pf explain` / `pf refine` CLI | **shipped** |
 | **1.7** | `CargoCheckStage` (type-aware validation profile: shadow copy + `cargo check` + JSON-parsed diagnostics), `validation_profile = "typed"` on `patch.apply` / `explain.patch`, `pf rename --typecheck` | **shipped** |
 | **1.8** | `CargoTestStage` (behavioral validation profile: shadow copy + `cargo test --no-fail-fast` + libtest-line parsing → one diagnostic per failing test), `validation_profile = "tested"`, `pf rename --run-tests` | **shipped** |
-| 1.9 (MVP rest) | Type-aware **rename** (rust-analyzer, scope-resolved), impacted-tests selection (instead of the whole suite), VS Code adapter minimal | 2–3 months |
+| **1.9** | `llm.propose_patch` (LLM emits typed `PatchPlan`s instead of fact candidates; op-registry + identifier grounding on every candidate), `pf propose-patch` CLI chains *propose → explain.patch* end-to-end | **shipped** |
+| 1.10 (MVP rest) | Type-aware **rename** (rust-analyzer, scope-resolved), impacted-tests selection (instead of the whole suite), VS Code adapter minimal | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

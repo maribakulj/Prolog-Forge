@@ -360,6 +360,56 @@
         }
       }
     },
+    "llm.propose_patch": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "intent", "anchor_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "intent": { "type": "string" },
+          "anchor_id": { "type": "string" },
+          "hops": { "type": "integer", "minimum": 0, "default": 1 },
+          "max_facts": { "type": "integer", "minimum": 1, "default": 256 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "accepted", "rejected", "cache_hit", "tokens_in", "tokens_out",
+          "candidates"
+        ],
+        "properties": {
+          "accepted": { "type": "integer", "minimum": 0 },
+          "rejected": { "type": "integer", "minimum": 0 },
+          "cache_hit": { "type": "boolean" },
+          "tokens_in": { "type": "integer", "minimum": 0 },
+          "tokens_out": { "type": "integer", "minimum": 0 },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["plan", "justification", "accepted"],
+              "properties": {
+                "plan": {
+                  "type": "object",
+                  "required": ["ops"],
+                  "properties": {
+                    "ops": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "label": { "type": "string" }
+                  }
+                },
+                "justification": { "type": "string" },
+                "accepted": { "type": "boolean" },
+                "rejection_reason": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
     "llm.refine": {
       "params": {
         "type": "object",

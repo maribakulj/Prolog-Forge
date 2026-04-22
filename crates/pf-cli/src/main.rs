@@ -17,13 +17,14 @@ use clap::{Parser, Subcommand};
 use pf_core::{dispatch, Core};
 use pf_protocol::{
     EvidenceNodeDto, ExplainPatchParams, ExplainPatchResult, Id, IngestFactParams,
-    InitializeParams, LlmProposeParams, LlmProposeResult, LlmRefineParams, LlmRefineResult,
-    PatchApplyParams, PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult,
-    PatchRollbackParams, PatchRollbackResult, QueryParams, QueryResult, Request, Response,
-    RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
-    VerdictDto, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
-    WorkspaceOpenResult, METHOD_EXPLAIN_PATCH, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
-    METHOD_LLM_PROPOSE, METHOD_LLM_REFINE, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW,
+    InitializeParams, LlmProposeParams, LlmProposePatchParams, LlmProposePatchResult,
+    LlmProposeResult, LlmRefineParams, LlmRefineResult, PatchApplyParams, PatchApplyResult,
+    PatchPlanDto, PatchPreviewParams, PatchPreviewResult, PatchRollbackParams, PatchRollbackResult,
+    QueryParams, QueryResult, Request, Response, RulesEvaluateParams, RulesEvaluateResult,
+    RulesLoadParams, RulesLoadResult, ServerCapabilities, VerdictDto, WorkspaceId,
+    WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams, WorkspaceOpenResult,
+    METHOD_EXPLAIN_PATCH, METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_LLM_PROPOSE,
+    METHOD_LLM_PROPOSE_PATCH, METHOD_LLM_REFINE, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW,
     METHOD_PATCH_ROLLBACK, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
     METHOD_WORKSPACE_OPEN,
 };
@@ -136,6 +137,29 @@ enum Cmd {
         #[arg(long, default_value = "3")]
         rounds: u32,
     },
+    /// Ask the LLM orchestrator for *typed patch plan* candidates and,
+    /// for every grounded one, immediately run `explain.patch` to
+    /// synthesize a proof-carrying verdict. This is the full
+    /// neuro-symbolic loop end-to-end: LLM proposes *what to do* in a
+    /// bounded op vocabulary, the symbolic side proves each suggestion
+    /// is safe.
+    ProposePatch {
+        /// Workspace root to index.
+        root: PathBuf,
+        /// Entity id to anchor the context selection.
+        #[arg(long)]
+        anchor: String,
+        /// Natural-language intent passed to the orchestrator.
+        #[arg(long, default_value = "propose a typed patch plan for this area")]
+        intent: String,
+        /// Context radius.
+        #[arg(long, default_value = "1")]
+        hops: usize,
+        /// Validation profile used when explaining each grounded
+        /// candidate (`default` | `typed` | `tested`).
+        #[arg(long, default_value = "default")]
+        profile: String,
+    },
     /// Produce a proof-carrying explanation for a rename plan: which
     /// observed facts are cited, which rules fire on the shadow graph,
     /// which candidates were considered, which validation stages ran, and
@@ -176,6 +200,13 @@ fn main() -> Result<()> {
             hops,
             rounds,
         } => cmd_refine(root, anchor, intent, hops, rounds),
+        Cmd::ProposePatch {
+            root,
+            anchor,
+            intent,
+            hops,
+            profile,
+        } => cmd_propose_patch(root, anchor, intent, hops, profile),
         Cmd::Explain {
             root,
             from,
@@ -468,6 +499,102 @@ fn cmd_refine(
                 .map(|r| format!("  [why: {r}]"))
                 .unwrap_or_default()
         );
+    }
+    Ok(())
+}
+
+fn cmd_propose_patch(
+    root: PathBuf,
+    anchor: String,
+    intent: String,
+    hops: usize,
+    profile: String,
+) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let _ = call(
+        &core,
+        METHOD_WORKSPACE_INDEX,
+        serde_json::to_value(WorkspaceIndexParams {
+            workspace_id: ws.clone(),
+        })?,
+    )?;
+
+    let resp = call(
+        &core,
+        METHOD_LLM_PROPOSE_PATCH,
+        serde_json::to_value(LlmProposePatchParams {
+            workspace_id: ws.clone(),
+            intent,
+            anchor_id: anchor,
+            hops,
+            max_facts: 256,
+        })?,
+    )?;
+    let r: LlmProposePatchResult = serde_json::from_value(resp)?;
+    println!(
+        "propose_patch: accepted {} / rejected {} (cache_hit={}, tokens_in={}, tokens_out={})",
+        r.accepted, r.rejected, r.cache_hit, r.tokens_in, r.tokens_out
+    );
+    // Normalize the profile to the wire vocabulary; "default" becomes
+    // None so the default pipeline runs.
+    let validation_profile = match profile.as_str() {
+        "default" | "" => None,
+        other => Some(other.to_string()),
+    };
+    for (idx, cand) in r.candidates.iter().enumerate() {
+        let head = if cand.accepted { "ACCEPT" } else { "REJECT" };
+        println!(
+            "  [{idx}] {head} {} — {}",
+            cand.plan.label, cand.justification
+        );
+        if let Some(reason) = &cand.rejection_reason {
+            println!("         why: {reason}");
+        }
+        if !cand.accepted {
+            continue;
+        }
+        // Run `explain.patch` on every accepted plan so the user sees the
+        // full proof-carrying verdict in the same output as the proposal.
+        let resp = call(
+            &core,
+            METHOD_EXPLAIN_PATCH,
+            serde_json::to_value(ExplainPatchParams {
+                workspace_id: ws.clone(),
+                plan: cand.plan.clone(),
+                candidate_outcomes: Vec::new(),
+                validation_profile: validation_profile.clone(),
+            })?,
+        )?;
+        let ex: ExplainPatchResult = serde_json::from_value(resp)?;
+        match ex.verdict {
+            VerdictDto::Accepted { notes, .. } => {
+                println!("         verdict: accepted");
+                for n in &notes {
+                    println!("           note: {n}");
+                }
+            }
+            VerdictDto::Rejected {
+                reason,
+                failing_stages,
+            } => {
+                println!("         verdict: rejected ({reason})");
+                for s in &failing_stages {
+                    println!("           failing stage: {s}");
+                }
+            }
+            VerdictDto::NotProven { reason } => {
+                println!("         verdict: not proven ({reason})");
+            }
+        }
     }
     Ok(())
 }

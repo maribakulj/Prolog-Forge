@@ -27,6 +27,13 @@ impl PromptBuilder {
         }
     }
 
+    pub fn propose_patch_v1() -> Self {
+        Self {
+            system_template: SYSTEM_PROPOSE_PATCH,
+            user_template: USER_PROPOSE_PATCH,
+        }
+    }
+
     pub fn build(&self, intent: &str, facts: &[Fact]) -> (String, String) {
         let context = render_facts(facts);
         let user = self
@@ -137,6 +144,21 @@ const USER_REFINE: &str = "Intent: {{intent}}\n\n\
 Context (observed facts):\n{{context}}\n\
 Prior rejections (do not repeat these):\n{{rejections}}\n\
 Prior validator diagnostics (address these if your proposals caused them):\n{{diagnostics}}\n\
+Respond with JSON only, no prose.";
+
+const SYSTEM_PROPOSE_PATCH: &str = "You are a static-analysis *patch proposer* attached to the \
+Prolog Forge neuro-symbolic runtime. Given an intent and a set of observed facts about a \
+codebase, you return *typed patch plans* that a human reviewer (or a downstream validator \
+pipeline) will decide to apply. Plans are bounded by a strict op vocabulary: the only valid \
+op today is `rename_function { old_name, new_name, files }`. More ops land in future phases. \
+You never invent identifiers that do not appear in the context; the `old_name` of every \
+rename op must correspond to an entity in the context. Your output MUST be valid JSON \
+matching the schema: \
+{ candidates: [ { plan: { ops: [ { op: string, ... } ], label: string }, \
+justification: string } ] }.";
+
+const USER_PROPOSE_PATCH: &str = "Intent: {{intent}}\n\n\
+Context (observed facts):\n{{context}}\n\
 Respond with JSON only, no prose.";
 
 #[cfg(test)]

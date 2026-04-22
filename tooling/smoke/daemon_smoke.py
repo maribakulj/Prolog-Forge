@@ -613,6 +613,72 @@ def main() -> int:
         )
         assert cargo_test_stage["ok"] is True, cargo_test_stage
 
+        # ---- llm.propose_patch: the LLM emits typed patch plans, the
+        # symbolic grounding guard filters hallucinations, and each
+        # grounded plan is directly consumable by explain.patch. This
+        # closes the full neuro-symbolic loop end-to-end.
+        scratch6_root = tempfile.mkdtemp(prefix="pf-smoke-propose-patch-")
+        scratch6_demo = os.path.join(scratch6_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch6_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 40, "method": "workspace.open",
+            "params": {"root": scratch6_demo},
+        })
+        ws_pp = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 41, "method": "workspace.index",
+            "params": {"workspace_id": ws_pp},
+        })
+        recv(proc)
+        # Anchor on `useless` (zero callers) so a rename of it type-checks
+        # cleanly under the typed profile later on.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 42, "method": "graph.query",
+            "params": {"workspace_id": ws_pp, "pattern": "function(F, useless)"},
+        })
+        anchor_rows = recv(proc)["result"]["bindings"]
+        assert anchor_rows, anchor_rows
+        anchor_id = anchor_rows[0]["F"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 43, "method": "llm.propose_patch",
+            "params": {
+                "workspace_id": ws_pp,
+                "intent": "propose a typed rename for this area",
+                "anchor_id": anchor_id,
+                "hops": 1,
+            },
+        })
+        pp = recv(proc)["result"]
+        assert pp["accepted"] >= 1, pp
+        assert pp["rejected"] >= 1, pp  # the hallucinated rename
+        # Every accepted candidate's plan must decode as a PatchPlanDto
+        # (ops + label). Feed the first accepted plan straight into
+        # explain.patch to prove the shape is consumable.
+        first_accepted = next(c for c in pp["candidates"] if c["accepted"])
+        assert "ops" in first_accepted["plan"], first_accepted
+        assert first_accepted["plan"]["ops"], first_accepted
+        send(proc, {
+            "jsonrpc": "2.0", "id": 44, "method": "explain.patch",
+            "params": {
+                "workspace_id": ws_pp,
+                "plan": first_accepted["plan"],
+                "candidate_outcomes": [],
+                "validation_profile": "typed",
+            },
+        })
+        pp_explain = recv(proc)["result"]
+        # The LLM-proposed plan, after grounding + type-check, must
+        # produce an `accepted` verdict. That is the loop closing: LLM
+        # says *what to do*, the symbolic side proves it is safe.
+        assert pp_explain["verdict"]["kind"] == "accepted", pp_explain
+        cargo_stage_pp = next(
+            e for e in pp_explain["evidence"]
+            if e["kind"] == "stage" and e["name"] == "cargo_check"
+        )
+        assert cargo_stage_pp["ok"] is True, cargo_stage_pp
+
+        shutil.rmtree(scratch6_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)
