@@ -183,6 +183,7 @@ pub struct ProposalOutcomeDto {
 // ---------- patch ---------------------------------------------------------
 
 pub const METHOD_PATCH_PREVIEW: &str = "patch.preview";
+pub const METHOD_PATCH_APPLY: &str = "patch.apply";
 
 /// Wire shape of a patch plan. The `op` field tags the variant, matching the
 /// `#[serde(tag = "op")]` enum in `pf-patch`. Kept as `Value` at the
@@ -221,6 +222,45 @@ pub struct FilePatchDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilePatchError {
     pub file: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchApplyParams {
+    pub workspace_id: WorkspaceId,
+    pub plan: PatchPlanDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchApplyResult {
+    pub applied: bool,
+    pub commit_id: Option<String>,
+    pub files_written: usize,
+    pub bytes_written: u64,
+    pub total_replacements: usize,
+    pub validation: ValidationReportDto,
+    /// `None` when the patch applied cleanly, `Some(reason)` when it was
+    /// rejected (validation failure, preflight mismatch, or rollback).
+    pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ValidationReportDto {
+    pub ok: bool,
+    pub stages: Vec<StageReportDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageReportDto {
+    pub stage: String,
+    pub ok: bool,
+    pub diagnostics: Vec<DiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticDto {
+    pub severity: String,
+    pub file: Option<String>,
     pub message: String,
 }
 

@@ -11,11 +11,13 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 3** — Phase 0 + Rust indexing + bounded LLM
-> orchestrator + typed patch planner. `pf rename` produces a unified diff
-> (preview-only, FS untouched) from a structured `PatchPlan` via
-> byte-accurate `syn`-driven edits that preserve comments. Transactional
-> apply and the validation pipeline land next. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 4** — Phase 0 + Rust indexing + bounded LLM
+> orchestrator + typed patch planner + transactional apply gated by a
+> pluggable validation pipeline. `pf rename --apply` previews the diff,
+> runs the syntactic stage against the shadow workspace, and only if it
+> passes writes every affected file via temp + atomic rename with
+> rollback on failure. The filesystem is only touched through this
+> gate. See [Roadmap](#roadmap).
 
 ---
 
@@ -67,8 +69,8 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
                                     ├── LLM orchestrator (Phase 1.2 ✓)
-                                    ├── patch planner    (Phase 1.3 ✓, preview only)
-                                    ├── validator        (Phase 1.4)
+                                    ├── patch planner    (Phase 1.3 ✓)
+                                    ├── validator        (Phase 1.4 ✓, syntactic)
                                     └── explainer        (Phase 2)
 ```
 
@@ -86,7 +88,8 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
 | [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard |
 | [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate Rust rename |
-| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `patch.preview` |
+| [`pf-validate`](crates/pf-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline` |
+| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `patch.preview` + `patch.apply` |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
@@ -196,8 +199,30 @@ The renamer parses each file with `syn`, collects the byte spans of every
 `Ident` matching the source name, applies the edits descending so offsets
 stay stable, and re-parses the result to guarantee syntactic validity.
 Comments and formatting survive (no pretty-printer round-trip). The
-filesystem is **not** touched — `patch.preview` is pure. Transactional
-apply and validation land in Phase 1.4.
+filesystem is **not** touched — `patch.preview` is pure.
+
+### Apply the patch transactionally
+
+```bash
+$ pf rename examples/rust-demo --from add --to sum --apply
+# …preview diff…
+applied: commit commit-18a8a3f598a1c2e1 (1 file(s), 531 bytes)
+```
+
+Every `patch.apply` goes through three gates:
+
+1. **Validation pipeline** (`pf-validate`). The `SyntacticStage` re-parses
+   every changed `.rs` file with `syn`; a patch that would produce
+   invalid Rust is rejected before anything reaches disk. The trait is
+   designed for composition — type-aware and rule stages slot in next.
+2. **Preflight check**. Before writing, the current on-disk content of
+   every target is compared against the bytes the plan was rendered
+   against. If anything drifted in between, the apply is aborted with an
+   optimistic-concurrency error; no file is touched.
+3. **Atomic write with rollback**. Each file is written through a
+   sibling temp and `rename`d in place (atomic on POSIX). If any step
+   fails, files already renamed are restored from in-memory backups so
+   the workspace never ends up half-patched.
 
 ### Talk to the daemon
 
@@ -227,6 +252,7 @@ CI and is the minimal reference client.
 | `rules.evaluate` | Run the engine to fixpoint. |
 | `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
 | `patch.preview` | Simulate a typed `PatchPlan` against the workspace, return per-file unified diffs. FS untouched. |
+| `patch.apply` | Validate + preflight + atomic write. Returns `{applied, commit_id, validation, rejection_reason}`. |
 
 Typed schemas live in [`schemas/protocol.json`](schemas/protocol.json). The
 Rust wire types in `pf-protocol` are kept in sync with that file by hand in
@@ -297,8 +323,9 @@ touching any Phase 0 artifact beyond the API enum.
 | **0** | Contracts, JSON-RPC, CSM v0, graph, Datalog v1, CLI, CI | **shipped** |
 | **1.1** | `pf-ingest`, `pf-lang-rust`, `workspace.index`, CSM→fact lowering, real-project demo | **shipped** |
 | **1.2** | `pf-llm`, `llm.propose`, context from trusted layers only, schema-validated output, anti-hallucination guard | **shipped** |
-| **1.3** | `pf-patch`, `patch.preview`, typed ops, byte-accurate Rust rename, unified diffs, `pf rename` CLI | **shipped (preview only)** |
-| 1.4 (MVP rest) | Transactional `patch.apply`, validation pipeline (syntactic/type/rule/test), VS Code adapter minimal | 2–4 months |
+| **1.3** | `pf-patch`, `patch.preview`, typed ops, byte-accurate Rust rename, unified diffs, `pf rename` CLI | **shipped** |
+| **1.4** | `pf-validate` (pluggable stages), `patch.apply` with preflight + atomic write + rollback, `pf rename --apply` | **shipped (syntactic stage)** |
+| 1.5 (MVP rest) | Type + rule + behavioral validation stages, disk-persistent commit journal, VS Code adapter minimal | 2–4 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

@@ -16,13 +16,13 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pf_core::{dispatch, Core};
 use pf_protocol::{
-    Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, PatchPlanDto,
-    PatchPreviewParams, PatchPreviewResult, QueryParams, QueryResult, Request, Response,
-    RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
-    WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
-    WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_LLM_PROPOSE,
-    METHOD_PATCH_PREVIEW, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
-    METHOD_WORKSPACE_OPEN,
+    Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, PatchApplyParams,
+    PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult, QueryParams,
+    QueryResult, Request, Response, RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams,
+    RulesLoadResult, ServerCapabilities, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult,
+    WorkspaceOpenParams, WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
+    METHOD_LLM_PROPOSE, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW, METHOD_RULES_EVALUATE,
+    METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX, METHOD_WORKSPACE_OPEN,
 };
 use serde_json::{json, Value};
 
@@ -71,6 +71,11 @@ enum Cmd {
         /// New identifier name.
         #[arg(long)]
         to: String,
+        /// Actually write the patch to disk after validation. Without this
+        /// flag the command only prints the preview; the filesystem is
+        /// never touched.
+        #[arg(long)]
+        apply: bool,
     },
     /// Index a Rust project then ask the bounded LLM orchestrator to
     /// propose candidate facts anchored at the given entity id.
@@ -103,11 +108,16 @@ fn main() -> Result<()> {
             intent,
             hops,
         } => cmd_propose(root, anchor, intent, hops),
-        Cmd::Rename { root, from, to } => cmd_rename(root, from, to),
+        Cmd::Rename {
+            root,
+            from,
+            to,
+            apply,
+        } => cmd_rename(root, from, to, apply),
     }
 }
 
-fn cmd_rename(root: PathBuf, from: String, to: String) -> Result<()> {
+fn cmd_rename(root: PathBuf, from: String, to: String, apply: bool) -> Result<()> {
     let core = Core::new();
     let resp = call(
         &core,
@@ -128,12 +138,14 @@ fn cmd_rename(root: PathBuf, from: String, to: String) -> Result<()> {
         ops: vec![op],
         label: format!("rename {from} -> {to}"),
     };
+
+    // Always show the preview first so the user sees what will happen.
     let resp = call(
         &core,
         METHOD_PATCH_PREVIEW,
         serde_json::to_value(PatchPreviewParams {
-            workspace_id: ws,
-            plan,
+            workspace_id: ws.clone(),
+            plan: plan.clone(),
         })?,
     )?;
     let preview: PatchPreviewResult = serde_json::from_value(resp)?;
@@ -151,6 +163,55 @@ fn cmd_rename(root: PathBuf, from: String, to: String) -> Result<()> {
             f.path, f.before_len, f.after_len, f.replacements
         );
         println!("{}", f.diff);
+    }
+
+    if !apply {
+        return Ok(());
+    }
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_APPLY,
+        serde_json::to_value(PatchApplyParams {
+            workspace_id: ws,
+            plan,
+        })?,
+    )?;
+    let result: PatchApplyResult = serde_json::from_value(resp)?;
+    println!();
+    if result.applied {
+        println!(
+            "applied: commit {} ({} file(s), {} bytes)",
+            result.commit_id.as_deref().unwrap_or("-"),
+            result.files_written,
+            result.bytes_written
+        );
+    } else {
+        println!(
+            "rejected: {}",
+            result.rejection_reason.as_deref().unwrap_or("unknown")
+        );
+    }
+    if !result.validation.ok {
+        println!("validation failures:");
+        for st in &result.validation.stages {
+            if st.ok {
+                continue;
+            }
+            println!("  [{}]:", st.stage);
+            for d in &st.diagnostics {
+                let where_ = st.diagnostics.iter().find_map(|x| x.file.clone());
+                println!(
+                    "    {}: {} ({})",
+                    d.severity,
+                    d.message,
+                    where_.as_deref().unwrap_or("-")
+                );
+            }
+        }
+    }
+    if !result.applied {
+        std::process::exit(2);
     }
     Ok(())
 }

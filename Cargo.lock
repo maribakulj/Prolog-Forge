@@ -234,6 +234,7 @@ dependencies = [
  "pf-persist",
  "pf-protocol",
  "pf-rules",
+ "pf-validate",
  "serde",
  "serde_json",
  "thiserror",
@@ -337,6 +338,16 @@ dependencies = [
  "pf-graph",
  "pf-protocol",
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "pf-validate"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syn",
  "thiserror",
 ]
 

@@ -200,7 +200,74 @@ def main() -> int:
         with open("examples/rust-demo/src/lib.rs") as f:
             assert "pub fn add(" in f.read(), "preview must not write to disk"
 
-        send(proc, {"jsonrpc": "2.0", "id": 15, "method": "session.shutdown"})
+        # ---- patch.apply on a scratch copy, assert validation + FS write
+        import shutil, tempfile
+        scratch_root = tempfile.mkdtemp(prefix="pf-smoke-")
+        scratch_demo = os.path.join(scratch_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 15, "method": "workspace.open",
+            "params": {"root": scratch_demo},
+        })
+        scratch_ws = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 16, "method": "patch.apply",
+            "params": {
+                "workspace_id": scratch_ws,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: apply add->sum",
+                },
+            },
+        })
+        applied = recv(proc)["result"]
+        assert applied["applied"] is True, applied
+        assert applied["validation"]["ok"] is True, applied
+        assert applied["files_written"] == 1, applied
+        with open(os.path.join(scratch_demo, "src/lib.rs")) as f:
+            scratch_content = f.read()
+        assert "pub fn sum(" in scratch_content, "apply must write new content"
+        assert "pub fn add(" not in scratch_content, "apply must remove old name"
+
+        # ---- apply an invalid plan to exercise the validation gate.
+        # Rename `Counter` to a reserved keyword to produce broken syntax,
+        # and assert the apply is rejected and the FS is untouched.
+        content_before = scratch_content
+        send(proc, {
+            "jsonrpc": "2.0", "id": 17, "method": "patch.apply",
+            "params": {
+                "workspace_id": scratch_ws,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "Counter",
+                        "new_name": "fn",
+                        "files": [],
+                    }],
+                    "label": "smoke: invalid rename",
+                },
+            },
+        })
+        bad = recv(proc)["result"]
+        # Either the rename itself refuses to produce invalid Rust (no-op)
+        # or validation catches it. Either way, the FS must not change.
+        assert bad["files_written"] == 0 or not bad["applied"], bad
+        with open(os.path.join(scratch_demo, "src/lib.rs")) as f:
+            assert f.read() == content_before, "invalid apply must not touch disk"
+
+        # Upstream fixture must still be untouched by either smoke path.
+        with open("examples/rust-demo/src/lib.rs") as f:
+            upstream = f.read()
+        assert "pub fn add(" in upstream, "upstream fixture must remain original"
+
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
+        send(proc, {"jsonrpc": "2.0", "id": 18, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")
