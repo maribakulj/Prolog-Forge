@@ -16,11 +16,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pf_core::{dispatch, Core};
 use pf_protocol::{
-    Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, QueryParams,
-    QueryResult, Request, Response, RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams,
-    RulesLoadResult, ServerCapabilities, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult,
-    WorkspaceOpenParams, WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
-    METHOD_LLM_PROPOSE, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
+    Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, PatchPlanDto,
+    PatchPreviewParams, PatchPreviewResult, QueryParams, QueryResult, Request, Response,
+    RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
+    WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
+    WorkspaceOpenResult, METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_LLM_PROPOSE,
+    METHOD_PATCH_PREVIEW, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
     METHOD_WORKSPACE_OPEN,
 };
 use serde_json::{json, Value};
@@ -59,6 +60,18 @@ enum Cmd {
         #[arg(long)]
         query: Option<String>,
     },
+    /// Preview the diff produced by renaming every occurrence of `from` to
+    /// `to` across the workspace's Rust files. Does not write to disk.
+    Rename {
+        /// Workspace root.
+        root: PathBuf,
+        /// Current identifier name.
+        #[arg(long)]
+        from: String,
+        /// New identifier name.
+        #[arg(long)]
+        to: String,
+    },
     /// Index a Rust project then ask the bounded LLM orchestrator to
     /// propose candidate facts anchored at the given entity id.
     Propose {
@@ -90,7 +103,56 @@ fn main() -> Result<()> {
             intent,
             hops,
         } => cmd_propose(root, anchor, intent, hops),
+        Cmd::Rename { root, from, to } => cmd_rename(root, from, to),
     }
+}
+
+fn cmd_rename(root: PathBuf, from: String, to: String) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let op = serde_json::json!({
+        "op": "rename_function",
+        "old_name": from,
+        "new_name": to,
+        "files": []
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("rename {from} -> {to}"),
+    };
+    let resp = call(
+        &core,
+        METHOD_PATCH_PREVIEW,
+        serde_json::to_value(PatchPreviewParams {
+            workspace_id: ws,
+            plan,
+        })?,
+    )?;
+    let preview: PatchPreviewResult = serde_json::from_value(resp)?;
+    println!(
+        "preview: {} replacement(s) across {} file(s)",
+        preview.total_replacements,
+        preview.files.len()
+    );
+    for e in &preview.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+    for f in &preview.files {
+        println!(
+            "\n# {} ({} bytes -> {} bytes, {} replacements)",
+            f.path, f.before_len, f.after_len, f.replacements
+        );
+        println!("{}", f.diff);
+    }
+    Ok(())
 }
 
 fn cmd_propose(root: PathBuf, anchor: String, intent: String, hops: usize) -> Result<()> {

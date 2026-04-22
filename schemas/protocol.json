@@ -164,6 +164,62 @@
         }
       }
     },
+    "patch.preview": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "plan"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "plan": {
+            "type": "object",
+            "required": ["ops"],
+            "properties": {
+              "ops": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["op"],
+                  "properties": { "op": { "type": "string" } }
+                }
+              },
+              "label": { "type": "string" }
+            }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["total_replacements", "files", "errors"],
+        "properties": {
+          "total_replacements": { "type": "integer", "minimum": 0 },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "before_len", "after_len", "replacements", "diff"],
+              "properties": {
+                "path": { "type": "string" },
+                "before_len": { "type": "integer", "minimum": 0 },
+                "after_len": { "type": "integer", "minimum": 0 },
+                "replacements": { "type": "integer", "minimum": 0 },
+                "diff": { "type": "string" }
+              }
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["file", "message"],
+              "properties": {
+                "file": { "type": "string" },
+                "message": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
     "llm.propose": {
       "params": {
         "type": "object",

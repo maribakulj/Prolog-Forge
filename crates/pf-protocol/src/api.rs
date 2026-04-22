@@ -180,6 +180,50 @@ pub struct ProposalOutcomeDto {
     pub rejection_reason: Option<String>,
 }
 
+// ---------- patch ---------------------------------------------------------
+
+pub const METHOD_PATCH_PREVIEW: &str = "patch.preview";
+
+/// Wire shape of a patch plan. The `op` field tags the variant, matching the
+/// `#[serde(tag = "op")]` enum in `pf-patch`. Kept as `Value` at the
+/// protocol boundary so new op kinds do not break older clients: the server
+/// decodes and rejects unknown ops, the JSON-RPC schema only guarantees
+/// `ops: Array<Object>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchPlanDto {
+    pub ops: Vec<Value>,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchPreviewParams {
+    pub workspace_id: WorkspaceId,
+    pub plan: PatchPlanDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchPreviewResult {
+    pub total_replacements: usize,
+    pub files: Vec<FilePatchDto>,
+    pub errors: Vec<FilePatchError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePatchDto {
+    pub path: String,
+    pub before_len: usize,
+    pub after_len: usize,
+    pub replacements: usize,
+    pub diff: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePatchError {
+    pub file: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RulesLoadParams {
     pub workspace_id: WorkspaceId,

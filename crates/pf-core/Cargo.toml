@@ -18,3 +18,4 @@ pf-csm.workspace = true
 pf-ingest.workspace = true
 pf-lang-rust.workspace = true
 pf-llm.workspace = true
+pf-patch.workspace = true

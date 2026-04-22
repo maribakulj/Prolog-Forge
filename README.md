@@ -11,12 +11,11 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 2** — Phase 0 + Rust indexing + a bounded LLM
-> orchestrator. `pf propose` indexes a project, extracts a sub-graph of
-> trusted facts around an anchor, calls a schema-constrained LLM
-> (deterministic `MockProvider` by default), filters out any hallucinated
-> identifier, and inserts the survivors at the `candidate` epistemic layer.
-> Patch planning and validation land next. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 3** — Phase 0 + Rust indexing + bounded LLM
+> orchestrator + typed patch planner. `pf rename` produces a unified diff
+> (preview-only, FS untouched) from a structured `PatchPlan` via
+> byte-accurate `syn`-driven edits that preserve comments. Transactional
+> apply and the validation pipeline land next. See [Roadmap](#roadmap).
 
 ---
 
@@ -68,7 +67,7 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
                                     ├── LLM orchestrator (Phase 1.2 ✓)
-                                    ├── patch planner    (Phase 1.3)
+                                    ├── patch planner    (Phase 1.3 ✓, preview only)
                                     ├── validator        (Phase 1.4)
                                     └── explainer        (Phase 2)
 ```
@@ -86,7 +85,8 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-ingest`](crates/pf-ingest) | Filesystem walker and source dispatch |
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
 | [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard |
-| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` |
+| [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate Rust rename |
+| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `patch.preview` |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
@@ -173,6 +173,32 @@ automatically — a human (or a future validation pipeline) is required to
 move them to `validated`. Default provider is the deterministic
 `MockProvider`; network providers slot in behind the same trait.
 
+### Preview a structured patch
+
+```bash
+$ pf rename examples/rust-demo --from add --to sum
+preview: 3 replacement(s) across 1 file(s)
+
+# src/lib.rs (531 bytes -> 531 bytes, 3 replacements)
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@
+ //! Tiny fixture used by tests and docs. Intentionally trivial.
+
+-pub fn add(a: i32, b: i32) -> i32 {
++pub fn sum(a: i32, b: i32) -> i32 {
+     a + b
+ }
+…
+```
+
+The renamer parses each file with `syn`, collects the byte spans of every
+`Ident` matching the source name, applies the edits descending so offsets
+stay stable, and re-parses the result to guarantee syntactic validity.
+Comments and formatting survive (no pretty-printer round-trip). The
+filesystem is **not** touched — `patch.preview` is pure. Transactional
+apply and validation land in Phase 1.4.
+
 ### Talk to the daemon
 
 The daemon speaks JSON-RPC 2.0 with LSP-style `Content-Length` framing on
@@ -200,6 +226,7 @@ CI and is the minimal reference client.
 | `rules.load` | Parse and register a Datalog source block. |
 | `rules.evaluate` | Run the engine to fixpoint. |
 | `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
+| `patch.preview` | Simulate a typed `PatchPlan` against the workspace, return per-file unified diffs. FS untouched. |
 
 Typed schemas live in [`schemas/protocol.json`](schemas/protocol.json). The
 Rust wire types in `pf-protocol` are kept in sync with that file by hand in
@@ -270,7 +297,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **0** | Contracts, JSON-RPC, CSM v0, graph, Datalog v1, CLI, CI | **shipped** |
 | **1.1** | `pf-ingest`, `pf-lang-rust`, `workspace.index`, CSM→fact lowering, real-project demo | **shipped** |
 | **1.2** | `pf-llm`, `llm.propose`, context from trusted layers only, schema-validated output, anti-hallucination guard | **shipped** |
-| 1.3–1.4 (MVP rest) | Patch planner + CST-aware printer, validation pipeline, VS Code adapter minimal | 2–4 months |
+| **1.3** | `pf-patch`, `patch.preview`, typed ops, byte-accurate Rust rename, unified diffs, `pf rename` CLI | **shipped (preview only)** |
+| 1.4 (MVP rest) | Transactional `patch.apply`, validation pipeline (syntactic/type/rule/test), VS Code adapter minimal | 2–4 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

@@ -174,7 +174,33 @@ def main() -> int:
         prop2 = recv(proc)["result"]
         assert prop2["cache_hit"] is True, prop2
 
-        send(proc, {"jsonrpc": "2.0", "id": 14, "method": "session.shutdown"})
+        # ---- patch.preview (rename) --------------------------------------
+        send(proc, {
+            "jsonrpc": "2.0", "id": 14, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws2,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: add -> sum",
+                },
+            },
+        })
+        prev = recv(proc)["result"]
+        assert prev["total_replacements"] == 3, prev
+        assert len(prev["files"]) == 1, prev
+        diff = prev["files"][0]["diff"]
+        assert "-pub fn add" in diff, diff
+        assert "+pub fn sum" in diff, diff
+        # FS must be untouched (preview only).
+        with open("examples/rust-demo/src/lib.rs") as f:
+            assert "pub fn add(" in f.read(), "preview must not write to disk"
+
+        send(proc, {"jsonrpc": "2.0", "id": 15, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")

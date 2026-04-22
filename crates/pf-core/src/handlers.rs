@@ -20,6 +20,7 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_RULES_LOAD => handle_rules_load(core, params),
         METHOD_RULES_EVALUATE => handle_rules_eval(core, params),
         METHOD_LLM_PROPOSE => handle_llm_propose(core, params),
+        METHOD_PATCH_PREVIEW => handle_patch_preview(core, params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -45,6 +46,7 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_RULES_LOAD.into(),
             METHOD_RULES_EVALUATE.into(),
             METHOD_LLM_PROPOSE.into(),
+            METHOD_PATCH_PREVIEW.into(),
         ],
     };
     Ok(serde_json::to_value(caps).unwrap())
@@ -194,6 +196,63 @@ fn handle_rules_load(core: &Core, params: Value) -> Result<Value, RpcError> {
         })
         .map_err(RpcError::invalid_params)??;
     Ok(serde_json::to_value(result).unwrap())
+}
+
+fn handle_patch_preview(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: PatchPreviewParams = decode(params)?;
+    // Decode ops from tagged JSON objects into typed PatchOps.
+    let mut ops: Vec<pf_patch::PatchOp> = Vec::with_capacity(p.plan.ops.len());
+    for raw in p.plan.ops {
+        let op: pf_patch::PatchOp = serde_json::from_value(raw)
+            .map_err(|e| RpcError::invalid_params(format!("bad op: {e}")))?;
+        ops.push(op);
+    }
+    let plan = pf_patch::PatchPlan::labelled(ops, p.plan.label);
+
+    // Load source texts from the workspace root (Rust files only for now).
+    let files = core
+        .with_workspace(&p.workspace_id, |ws, _st| {
+            let root = std::path::PathBuf::from(&ws.root);
+            let mut map: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for sf in pf_ingest::walk(&root, &pf_ingest::IngestOptions::default()) {
+                if sf.language != "rust" {
+                    continue;
+                }
+                if let Ok(src) = std::fs::read_to_string(&sf.path) {
+                    map.insert(sf.relative.display().to_string(), src);
+                }
+            }
+            map
+        })
+        .map_err(RpcError::invalid_params)?;
+
+    let preview =
+        pf_patch::preview(&plan, &files).map_err(|e| RpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(PatchPreviewResult {
+        total_replacements: preview.total_replacements,
+        files: preview
+            .files
+            .into_iter()
+            .map(|f| FilePatchDto {
+                path: f.path,
+                before_len: f.before_len,
+                after_len: f.after_len,
+                replacements: f.replacements,
+                diff: f.diff,
+            })
+            .collect(),
+        errors: preview
+            .errors
+            .into_iter()
+            .map(|e| FilePatchError {
+                file: e.file,
+                message: e.message,
+            })
+            .collect(),
+    })
+    .unwrap())
 }
 
 fn handle_llm_propose(core: &Core, params: Value) -> Result<Value, RpcError> {
