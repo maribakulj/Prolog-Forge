@@ -119,6 +119,26 @@ reaches(A, C) :- resolved_call(A, B), reaches(B, C).
 recursive(F) :- reaches(F, F).
 ```
 
+## The `violation/1` convention (apply-gate)
+
+Rule packs can gate `patch.apply` by producing facts whose predicate is
+`violation`. When a workspace has rules loaded, the apply pipeline runs a
+`rules` validation stage after the syntactic stage: it rebuilds a shadow
+graph from the proposed post-patch source, re-evaluates the rule set, and
+fails the stage if the shadow graph derives any `violation(...)` fact.
+Failures block the write — the filesystem is never touched.
+
+Example — forbid any top-level function named `forbidden`:
+
+```prolog
+violation(F) :- function(F, forbidden).
+```
+
+If a patch introduces `pub fn forbidden()`, the shadow graph derives
+`violation(...)` and the apply is rejected with a diagnostic listing the
+violating fact. Other arities (`violation/2`, `violation/3`, …) are also
+collected; the convention is the predicate name, not the arity.
+
 ## Non-goals
 
 - No higher-order syntax. No `findall`, no meta-call.

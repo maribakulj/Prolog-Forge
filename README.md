@@ -11,12 +11,14 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 2** — Phase 0 + Rust indexing + a bounded LLM
-> orchestrator. `pf propose` indexes a project, extracts a sub-graph of
-> trusted facts around an anchor, calls a schema-constrained LLM
-> (deterministic `MockProvider` by default), filters out any hallucinated
-> identifier, and inserts the survivors at the `candidate` epistemic layer.
-> Patch planning and validation land next. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 5** — everything from step 4 plus a rule-stage
+> apply-gate (rule packs with `violation(...)` heads block applies that
+> introduce constraint violations), a disk-persistent commit journal at
+> `<root>/.prolog-forge/journal/`, and `patch.rollback` which undoes an
+> applied commit atomically with an optimistic-concurrency preflight
+> against the on-disk state. The MVP loop — **index → rules →
+> LLM candidates → patch → validate → apply → journal → rollback** —
+> is now closed end-to-end. See [Roadmap](#roadmap).
 
 ---
 
@@ -68,8 +70,9 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
                                     ├── LLM orchestrator (Phase 1.2 ✓)
-                                    ├── patch planner    (Phase 1.3)
-                                    ├── validator        (Phase 1.4)
+                                    ├── patch planner    (Phase 1.3 ✓)
+                                    ├── validator        (Phase 1.4–5 ✓, syntactic + rule)
+                                    ├── commit journal   (Phase 1.5 ✓, JSON on disk)
                                     └── explainer        (Phase 2)
 ```
 
@@ -86,7 +89,9 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-ingest`](crates/pf-ingest) | Filesystem walker and source dispatch |
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
 | [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard |
-| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` |
+| [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate Rust rename |
+| [`pf-validate`](crates/pf-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline` |
+| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `patch.preview` + `patch.apply` |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
@@ -173,6 +178,80 @@ automatically — a human (or a future validation pipeline) is required to
 move them to `validated`. Default provider is the deterministic
 `MockProvider`; network providers slot in behind the same trait.
 
+### Preview a structured patch
+
+```bash
+$ pf rename examples/rust-demo --from add --to sum
+preview: 3 replacement(s) across 1 file(s)
+
+# src/lib.rs (531 bytes -> 531 bytes, 3 replacements)
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@
+ //! Tiny fixture used by tests and docs. Intentionally trivial.
+
+-pub fn add(a: i32, b: i32) -> i32 {
++pub fn sum(a: i32, b: i32) -> i32 {
+     a + b
+ }
+…
+```
+
+The renamer parses each file with `syn`, collects the byte spans of every
+`Ident` matching the source name, applies the edits descending so offsets
+stay stable, and re-parses the result to guarantee syntactic validity.
+Comments and formatting survive (no pretty-printer round-trip). The
+filesystem is **not** touched — `patch.preview` is pure.
+
+### Apply the patch transactionally
+
+```bash
+$ pf rename examples/rust-demo --from add --to sum --apply
+# …preview diff…
+applied: commit commit-18a8a3f598a1c2e1 (1 file(s), 531 bytes)
+```
+
+Every `patch.apply` goes through three gates:
+
+1. **Validation pipeline** (`pf-validate`). The `SyntacticStage` re-parses
+   every changed `.rs` file with `syn`; a patch that would produce
+   invalid Rust is rejected before anything reaches disk. The trait is
+   designed for composition — type-aware and rule stages slot in next.
+2. **Preflight check**. Before writing, the current on-disk content of
+   every target is compared against the bytes the plan was rendered
+   against. If anything drifted in between, the apply is aborted with an
+   optimistic-concurrency error; no file is touched.
+3. **Atomic write with rollback**. Each file is written through a
+   sibling temp and `rename`d in place (atomic on POSIX). If any step
+   fails, files already renamed are restored from in-memory backups so
+   the workspace never ends up half-patched.
+
+When all three gates pass, a JSON commit entry is written to
+`<root>/.prolog-forge/journal/<commit_id>.json` with the before/after
+bytes of every changed file.
+
+### Roll a commit back
+
+```bash
+$ pf rollback examples/rust-demo commit-18a8a527b73cc155
+rolled back: commit commit-18a8a527b73cc155 (rename add -> sum), 1 file(s) restored
+```
+
+`patch.rollback` refuses if the on-disk content no longer matches what
+was written at commit time (someone hand-edited the file — rollback is
+not automatic conflict resolution). On success it uses the same atomic
+write path as `apply`, then deletes the journal entry. Single-commit
+rollback only at this stage; a redo stack and cross-commit undo come
+later.
+
+### Rule-pack apply-gate
+
+A workspace whose `rules.load`ed pack defines `violation(...)` rules
+turns every `patch.apply` into a guarded operation: the shadow source
+is re-analyzed, the graph is rebuilt, the rules are re-evaluated, and
+any derived `violation/*` fact rejects the apply with diagnostics. See
+[`docs/rules-dsl.md`](docs/rules-dsl.md#the-violation1-convention-apply-gate).
+
 ### Talk to the daemon
 
 The daemon speaks JSON-RPC 2.0 with LSP-style `Content-Length` framing on
@@ -200,6 +279,9 @@ CI and is the minimal reference client.
 | `rules.load` | Parse and register a Datalog source block. |
 | `rules.evaluate` | Run the engine to fixpoint. |
 | `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
+| `patch.preview` | Simulate a typed `PatchPlan` against the workspace, return per-file unified diffs. FS untouched. |
+| `patch.apply` | Validate + preflight + atomic write + journal. Returns `{applied, commit_id, validation, rejection_reason}`. |
+| `patch.rollback` | Restore a committed patch. Preflight + atomic restore + journal delete. |
 
 Typed schemas live in [`schemas/protocol.json`](schemas/protocol.json). The
 Rust wire types in `pf-protocol` are kept in sync with that file by hand in
@@ -270,7 +352,10 @@ touching any Phase 0 artifact beyond the API enum.
 | **0** | Contracts, JSON-RPC, CSM v0, graph, Datalog v1, CLI, CI | **shipped** |
 | **1.1** | `pf-ingest`, `pf-lang-rust`, `workspace.index`, CSM→fact lowering, real-project demo | **shipped** |
 | **1.2** | `pf-llm`, `llm.propose`, context from trusted layers only, schema-validated output, anti-hallucination guard | **shipped** |
-| 1.3–1.4 (MVP rest) | Patch planner + CST-aware printer, validation pipeline, VS Code adapter minimal | 2–4 months |
+| **1.3** | `pf-patch`, `patch.preview`, typed ops, byte-accurate Rust rename, unified diffs, `pf rename` CLI | **shipped** |
+| **1.4** | `pf-validate` (pluggable stages), `patch.apply` with preflight + atomic write + rollback, `pf rename --apply` | **shipped (syntactic stage)** |
+| **1.5** | `RuleStage` (`violation/*` apply-gate), disk-persistent commit journal, `patch.rollback`, `pf rollback` CLI | **shipped** |
+| 1.6 (MVP rest) | Type-aware rename (rust-analyzer), behavioral validation stage, VS Code adapter minimal | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

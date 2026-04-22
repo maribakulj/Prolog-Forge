@@ -174,7 +174,191 @@ def main() -> int:
         prop2 = recv(proc)["result"]
         assert prop2["cache_hit"] is True, prop2
 
-        send(proc, {"jsonrpc": "2.0", "id": 14, "method": "session.shutdown"})
+        # ---- patch.preview (rename) --------------------------------------
+        send(proc, {
+            "jsonrpc": "2.0", "id": 14, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws2,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: add -> sum",
+                },
+            },
+        })
+        prev = recv(proc)["result"]
+        assert prev["total_replacements"] == 3, prev
+        assert len(prev["files"]) == 1, prev
+        diff = prev["files"][0]["diff"]
+        assert "-pub fn add" in diff, diff
+        assert "+pub fn sum" in diff, diff
+        # FS must be untouched (preview only).
+        with open("examples/rust-demo/src/lib.rs") as f:
+            assert "pub fn add(" in f.read(), "preview must not write to disk"
+
+        # ---- patch.apply on a scratch copy, assert validation + FS write
+        import shutil, tempfile
+        scratch_root = tempfile.mkdtemp(prefix="pf-smoke-")
+        scratch_demo = os.path.join(scratch_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 15, "method": "workspace.open",
+            "params": {"root": scratch_demo},
+        })
+        scratch_ws = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 16, "method": "patch.apply",
+            "params": {
+                "workspace_id": scratch_ws,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: apply add->sum",
+                },
+            },
+        })
+        applied = recv(proc)["result"]
+        assert applied["applied"] is True, applied
+        assert applied["validation"]["ok"] is True, applied
+        assert applied["files_written"] == 1, applied
+        with open(os.path.join(scratch_demo, "src/lib.rs")) as f:
+            scratch_content = f.read()
+        assert "pub fn sum(" in scratch_content, "apply must write new content"
+        assert "pub fn add(" not in scratch_content, "apply must remove old name"
+
+        # ---- apply an invalid plan to exercise the validation gate.
+        # Rename `Counter` to a reserved keyword to produce broken syntax,
+        # and assert the apply is rejected and the FS is untouched.
+        content_before = scratch_content
+        send(proc, {
+            "jsonrpc": "2.0", "id": 17, "method": "patch.apply",
+            "params": {
+                "workspace_id": scratch_ws,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "Counter",
+                        "new_name": "fn",
+                        "files": [],
+                    }],
+                    "label": "smoke: invalid rename",
+                },
+            },
+        })
+        bad = recv(proc)["result"]
+        # Either the rename itself refuses to produce invalid Rust (no-op)
+        # or validation catches it. Either way, the FS must not change.
+        assert bad["files_written"] == 0 or not bad["applied"], bad
+        with open(os.path.join(scratch_demo, "src/lib.rs")) as f:
+            assert f.read() == content_before, "invalid apply must not touch disk"
+
+        # Upstream fixture must still be untouched by either smoke path.
+        with open("examples/rust-demo/src/lib.rs") as f:
+            upstream = f.read()
+        assert "pub fn add(" in upstream, "upstream fixture must remain original"
+
+        # ---- rule-pack apply gate (violation/1 convention)
+        # Load a rule that forbids a function named `sum`, then attempt to
+        # re-apply the same rename against a fresh scratch. Expect rejection.
+        scratch2_root = tempfile.mkdtemp(prefix="pf-smoke-rules-")
+        scratch2_demo = os.path.join(scratch2_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch2_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 19, "method": "workspace.open",
+            "params": {"root": scratch2_demo},
+        })
+        ws3 = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 20, "method": "rules.load",
+            "params": {
+                "workspace_id": ws3,
+                "source": "violation(F) :- function(F, sum).",
+            },
+        })
+        recv(proc)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 21, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws3,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: gated apply",
+                },
+            },
+        })
+        gated = recv(proc)["result"]
+        assert gated["applied"] is False, gated
+        # At least one stage must have failed and the rules stage must be in
+        # the report.
+        stage_names = [s["stage"] for s in gated["validation"]["stages"]]
+        assert "rules" in stage_names, gated
+        with open(os.path.join(scratch2_demo, "src/lib.rs")) as f:
+            assert "pub fn add(" in f.read(), "rule gate must prevent the write"
+
+        # ---- full loop: apply -> rollback -> verify disk restored.
+        scratch3_root = tempfile.mkdtemp(prefix="pf-smoke-rollback-")
+        scratch3_demo = os.path.join(scratch3_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch3_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 22, "method": "workspace.open",
+            "params": {"root": scratch3_demo},
+        })
+        ws4 = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 23, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws4,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: rollback cycle",
+                },
+            },
+        })
+        ok_apply = recv(proc)["result"]
+        assert ok_apply["applied"] is True
+        commit_id = ok_apply["commit_id"]
+        with open(os.path.join(scratch3_demo, "src/lib.rs")) as f:
+            assert "pub fn sum(" in f.read()
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 24, "method": "patch.rollback",
+            "params": {"workspace_id": ws4, "commit_id": commit_id},
+        })
+        rolled = recv(proc)["result"]
+        assert rolled["rolled_back"] is True, rolled
+        assert rolled["files_restored"] == 1, rolled
+        with open(os.path.join(scratch3_demo, "src/lib.rs")) as f:
+            restored = f.read()
+        assert "pub fn add(" in restored, "rollback must restore original content"
+        assert "pub fn sum(" not in restored, "rollback must remove patch content"
+        # Journal entry must have been deleted.
+        assert not os.path.exists(os.path.join(
+            scratch3_demo, ".prolog-forge/journal", f"{commit_id}.json"
+        )), "rollback must delete journal entry"
+
+        shutil.rmtree(scratch_root, ignore_errors=True)
+        shutil.rmtree(scratch2_root, ignore_errors=True)
+        shutil.rmtree(scratch3_root, ignore_errors=True)
+
+        send(proc, {"jsonrpc": "2.0", "id": 25, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")

@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 2 (bounded LLM orchestrator landed)
+## Current state — Phase 1 step 5 (rule stage + commit journal + rollback landed)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -21,7 +21,9 @@ JSON-RPC.
 | `pf-ingest` | Filesystem walker, source-file dispatch. |
 | `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
 | `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only), prompt builder, content-addressed response cache, identifier-resolution guard. |
-| `pf-core` | Session/workspace manager, API dispatcher (`dispatch`), CSM→fact lowering, `workspace.index` pipeline, `llm.propose` handler. |
+| `pf-patch` | Typed patch planner: `PatchOp` (RenameFunction so far), `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
+| `pf-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. |
+| `pf-core` | Session/workspace manager, API dispatcher, CSM→fact lowering, `workspace.index`, `llm.propose`, `patch.preview`, `patch.apply` (+ `RuleStage`, disk-persistent commit journal), `patch.rollback`. |
 | `pf-daemon` | Binary: stdio JSON-RPC server wrapping the Core. |
 | `pf-cli` | Binary: reference adapter, also used in CI. |
 
@@ -59,6 +61,9 @@ client  ──►  rules.load(src)             ──►  {rules_added, facts_ad
 client  ──►  rules.evaluate              ──►  {derived, iterations}
 client  ──►  graph.query(pattern)        ──►  {count, bindings[]}
 client  ──►  llm.propose(anchor, intent) ──►  {accepted, rejected, outcomes}
+client  ──►  patch.preview(plan)         ──►  {total_replacements, files[], errors[]}
+client  ──►  patch.apply(plan)           ──►  {applied, commit_id, validation, …}
+client  ──►  patch.rollback(commit_id)   ──►  {rolled_back, files_restored, …}
 client  ──►  session.shutdown
 ```
 
@@ -82,6 +87,11 @@ slot on top of this loop in the following steps.
 - Type-aware Rust analysis (cross-module resolution via rust-analyzer).
 - Network LLM providers (Anthropic, OpenAI, local llama.cpp) — the trait is ready; only the mock is wired in Phase 1.2.
 - LLM modes beyond the proposer: explainer (NL rendering of proof trees), classifier, planner, oracle.
+- Type-aware validation stage (rust-analyzer integration, Phase 2).
+- Behavioral stage (run impacted tests).
+- Content-addressed journal (current format is plain JSON and stores full before/after bytes per file — fine at MVP scale, compressed CAS coming with the disk-backed `pf-persist`).
+- Cross-commit rollback (Phase 1.5 rollback is single-commit; a redo/undo stack arrives later).
+- Scope-aware rename (requires the type-aware Rust analyzer, Phase 2). Current rename touches every `Ident` whose string matches, which can clobber shadow-binding variables of the same name.
 - Patch planning / application.
 - Validation pipeline (syntactic, type, behavioral oracles).
 - Explainer / proof-tree renderer.

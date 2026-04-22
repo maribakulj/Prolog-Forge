@@ -20,6 +20,9 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_RULES_LOAD => handle_rules_load(core, params),
         METHOD_RULES_EVALUATE => handle_rules_eval(core, params),
         METHOD_LLM_PROPOSE => handle_llm_propose(core, params),
+        METHOD_PATCH_PREVIEW => handle_patch_preview(core, params),
+        METHOD_PATCH_APPLY => handle_patch_apply(core, params),
+        METHOD_PATCH_ROLLBACK => handle_patch_rollback(core, params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -45,6 +48,9 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_RULES_LOAD.into(),
             METHOD_RULES_EVALUATE.into(),
             METHOD_LLM_PROPOSE.into(),
+            METHOD_PATCH_PREVIEW.into(),
+            METHOD_PATCH_APPLY.into(),
+            METHOD_PATCH_ROLLBACK.into(),
         ],
     };
     Ok(serde_json::to_value(caps).unwrap())
@@ -194,6 +200,276 @@ fn handle_rules_load(core: &Core, params: Value) -> Result<Value, RpcError> {
         })
         .map_err(RpcError::invalid_params)??;
     Ok(serde_json::to_value(result).unwrap())
+}
+
+fn handle_patch_preview(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: PatchPreviewParams = decode(params)?;
+    // Decode ops from tagged JSON objects into typed PatchOps.
+    let mut ops: Vec<pf_patch::PatchOp> = Vec::with_capacity(p.plan.ops.len());
+    for raw in p.plan.ops {
+        let op: pf_patch::PatchOp = serde_json::from_value(raw)
+            .map_err(|e| RpcError::invalid_params(format!("bad op: {e}")))?;
+        ops.push(op);
+    }
+    let plan = pf_patch::PatchPlan::labelled(ops, p.plan.label);
+
+    // Load source texts from the workspace root (Rust files only for now).
+    let files = core
+        .with_workspace(&p.workspace_id, |ws, _st| {
+            let root = std::path::PathBuf::from(&ws.root);
+            let mut map: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for sf in pf_ingest::walk(&root, &pf_ingest::IngestOptions::default()) {
+                if sf.language != "rust" {
+                    continue;
+                }
+                if let Ok(src) = std::fs::read_to_string(&sf.path) {
+                    map.insert(sf.relative.display().to_string(), src);
+                }
+            }
+            map
+        })
+        .map_err(RpcError::invalid_params)?;
+
+    let preview =
+        pf_patch::preview(&plan, &files).map_err(|e| RpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(PatchPreviewResult {
+        total_replacements: preview.total_replacements,
+        files: preview
+            .files
+            .into_iter()
+            .map(|f| FilePatchDto {
+                path: f.path,
+                before_len: f.before_len,
+                after_len: f.after_len,
+                replacements: f.replacements,
+                diff: f.diff,
+            })
+            .collect(),
+        errors: preview
+            .errors
+            .into_iter()
+            .map(|e| FilePatchError {
+                file: e.file,
+                message: e.message,
+            })
+            .collect(),
+    })
+    .unwrap())
+}
+
+fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
+    use pf_validate::{Pipeline, ValidationContext, ValidationStage};
+
+    let p: PatchApplyParams = decode(params)?;
+
+    // Decode plan (shared shape with preview).
+    let mut ops: Vec<pf_patch::PatchOp> = Vec::with_capacity(p.plan.ops.len());
+    for raw in p.plan.ops {
+        let op: pf_patch::PatchOp = serde_json::from_value(raw)
+            .map_err(|e| RpcError::invalid_params(format!("bad op: {e}")))?;
+        ops.push(op);
+    }
+    let plan = pf_patch::PatchPlan::labelled(ops, p.plan.label);
+    let plan_label = plan.label.clone();
+
+    // Load originals + root + snapshot the workspace's rule set.
+    let (root, original, rules) = core
+        .with_workspace(&p.workspace_id, |w, st| {
+            let root = std::path::PathBuf::from(&w.root);
+            let mut map: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for sf in pf_ingest::walk(&root, &pf_ingest::IngestOptions::default()) {
+                if sf.language != "rust" {
+                    continue;
+                }
+                if let Ok(src) = std::fs::read_to_string(&sf.path) {
+                    map.insert(sf.relative.display().to_string(), src);
+                }
+            }
+            (root, map, st.rules.clone())
+        })
+        .map_err(RpcError::invalid_params)?;
+
+    // Build the shadow file map by re-applying each op.
+    let shadow = build_shadow(&plan, &original);
+
+    // Diff-based replacement count (for parity with preview's display).
+    let total_replacements = shadow
+        .iter()
+        .filter(|(k, v)| original.get(*k).map(|o| o != *v).unwrap_or(false))
+        .count();
+
+    // Build the pipeline. SyntacticStage always runs; RuleStage runs only
+    // when the workspace has rules loaded — rule packs gate applies via
+    // the `violation(...)` convention documented in docs/rules-dsl.md.
+    let mut stages: Vec<Box<dyn ValidationStage>> = vec![Box::new(pf_validate::SyntacticStage)];
+    if !rules.is_empty() {
+        stages.push(Box::new(crate::validate_stages::RuleStage::new(rules)));
+    }
+    let validation = Pipeline::custom(stages).run(&ValidationContext {
+        shadow_files: &shadow,
+        original_files: &original,
+    });
+    let validation_dto = to_validation_dto(&validation);
+
+    if !validation.ok {
+        return Ok(serde_json::to_value(PatchApplyResult {
+            applied: false,
+            commit_id: None,
+            files_written: 0,
+            bytes_written: 0,
+            total_replacements,
+            validation: validation_dto,
+            rejection_reason: Some("validation failed".into()),
+        })
+        .unwrap());
+    }
+
+    match crate::apply::apply_transactional(&root, &shadow, &original) {
+        Ok(out) => {
+            // Record the commit to the on-disk journal so `patch.rollback`
+            // can undo it. Journal failures are non-fatal for the apply
+            // itself — surface them as warnings on stderr via tracing but
+            // still report the commit as applied.
+            let files: Vec<crate::journal::CommitFile> = shadow
+                .iter()
+                .filter_map(|(rel, new_content)| {
+                    let before = original.get(rel)?;
+                    if before == new_content {
+                        None
+                    } else {
+                        Some(crate::journal::CommitFile {
+                            path: rel.clone(),
+                            before: before.clone(),
+                            after: new_content.clone(),
+                        })
+                    }
+                })
+                .collect();
+            let entry = crate::journal::new_entry(out.commit_id.clone(), plan_label, files);
+            if let Err(e) = crate::journal::write(&root, &entry) {
+                tracing::warn!("commit journal write failed: {e}");
+            }
+
+            Ok(serde_json::to_value(PatchApplyResult {
+                applied: true,
+                commit_id: Some(out.commit_id),
+                files_written: out.files_written,
+                bytes_written: out.bytes_written,
+                total_replacements,
+                validation: validation_dto,
+                rejection_reason: None,
+            })
+            .unwrap())
+        }
+        Err(e) => Ok(serde_json::to_value(PatchApplyResult {
+            applied: false,
+            commit_id: None,
+            files_written: 0,
+            bytes_written: 0,
+            total_replacements,
+            validation: validation_dto,
+            rejection_reason: Some(e.to_string()),
+        })
+        .unwrap()),
+    }
+}
+
+fn handle_patch_rollback(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: PatchRollbackParams = decode(params)?;
+    let root = core
+        .with_workspace(&p.workspace_id, |w, _st| std::path::PathBuf::from(&w.root))
+        .map_err(RpcError::invalid_params)?;
+
+    match crate::rollback::rollback(&root, &p.commit_id) {
+        Ok(out) => Ok(serde_json::to_value(PatchRollbackResult {
+            rolled_back: true,
+            commit_id: out.commit_id,
+            files_restored: out.files_restored,
+            label: out.label,
+            reason: None,
+        })
+        .unwrap()),
+        Err(e) => Ok(serde_json::to_value(PatchRollbackResult {
+            rolled_back: false,
+            commit_id: p.commit_id,
+            files_restored: 0,
+            label: String::new(),
+            reason: Some(e.to_string()),
+        })
+        .unwrap()),
+    }
+}
+
+fn build_shadow(
+    plan: &pf_patch::PatchPlan,
+    original: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut working = original.clone();
+    for op in &plan.ops {
+        match op {
+            pf_patch::PatchOp::RenameFunction {
+                old_name,
+                new_name,
+                files,
+            } => {
+                let paths: Vec<String> = if files.is_empty() {
+                    working
+                        .keys()
+                        .filter(|p| p.ends_with(".rs"))
+                        .cloned()
+                        .collect()
+                } else {
+                    files
+                        .iter()
+                        .filter(|p| working.contains_key(p.as_str()))
+                        .cloned()
+                        .collect()
+                };
+                for path in paths {
+                    if let Some(src) = working.get(&path).cloned() {
+                        if let Ok((new_src, n)) =
+                            pf_patch::rust_rename::rename(&src, old_name, new_name)
+                        {
+                            if n > 0 {
+                                working.insert(path, new_src);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    working
+}
+
+fn to_validation_dto(r: &pf_validate::ValidationReport) -> ValidationReportDto {
+    ValidationReportDto {
+        ok: r.ok,
+        stages: r
+            .stages
+            .iter()
+            .map(|s| StageReportDto {
+                stage: s.stage.clone(),
+                ok: s.ok,
+                diagnostics: s
+                    .diagnostics
+                    .iter()
+                    .map(|d| DiagnosticDto {
+                        severity: match d.severity {
+                            pf_validate::Severity::Error => "error".into(),
+                            pf_validate::Severity::Warning => "warning".into(),
+                            pf_validate::Severity::Info => "info".into(),
+                        },
+                        file: d.file.clone(),
+                        message: d.message.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 fn handle_llm_propose(core: &Core, params: Value) -> Result<Value, RpcError> {

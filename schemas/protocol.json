@@ -164,6 +164,148 @@
         }
       }
     },
+    "patch.rollback": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "commit_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "commit_id": { "type": "string" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["rolled_back", "commit_id", "files_restored", "label", "reason"],
+        "properties": {
+          "rolled_back": { "type": "boolean" },
+          "commit_id": { "type": "string" },
+          "files_restored": { "type": "integer", "minimum": 0 },
+          "label": { "type": "string" },
+          "reason": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "patch.apply": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "plan"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "plan": {
+            "type": "object",
+            "required": ["ops"],
+            "properties": {
+              "ops": { "type": "array", "items": { "type": "object" } },
+              "label": { "type": "string" }
+            }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "applied", "commit_id", "files_written", "bytes_written",
+          "total_replacements", "validation", "rejection_reason"
+        ],
+        "properties": {
+          "applied": { "type": "boolean" },
+          "commit_id": { "type": ["string", "null"] },
+          "files_written": { "type": "integer", "minimum": 0 },
+          "bytes_written": { "type": "integer", "minimum": 0 },
+          "total_replacements": { "type": "integer", "minimum": 0 },
+          "validation": {
+            "type": "object",
+            "required": ["ok", "stages"],
+            "properties": {
+              "ok": { "type": "boolean" },
+              "stages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["stage", "ok", "diagnostics"],
+                  "properties": {
+                    "stage": { "type": "string" },
+                    "ok": { "type": "boolean" },
+                    "diagnostics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["severity", "message"],
+                        "properties": {
+                          "severity": {
+                            "type": "string",
+                            "enum": ["error", "warning", "info"]
+                          },
+                          "file": { "type": ["string", "null"] },
+                          "message": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "rejection_reason": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "patch.preview": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "plan"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "plan": {
+            "type": "object",
+            "required": ["ops"],
+            "properties": {
+              "ops": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["op"],
+                  "properties": { "op": { "type": "string" } }
+                }
+              },
+              "label": { "type": "string" }
+            }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["total_replacements", "files", "errors"],
+        "properties": {
+          "total_replacements": { "type": "integer", "minimum": 0 },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "before_len", "after_len", "replacements", "diff"],
+              "properties": {
+                "path": { "type": "string" },
+                "before_len": { "type": "integer", "minimum": 0 },
+                "after_len": { "type": "integer", "minimum": 0 },
+                "replacements": { "type": "integer", "minimum": 0 },
+                "diff": { "type": "string" }
+              }
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["file", "message"],
+              "properties": {
+                "file": { "type": "string" },
+                "message": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
     "llm.propose": {
       "params": {
         "type": "object",

@@ -180,6 +180,106 @@ pub struct ProposalOutcomeDto {
     pub rejection_reason: Option<String>,
 }
 
+// ---------- patch ---------------------------------------------------------
+
+pub const METHOD_PATCH_PREVIEW: &str = "patch.preview";
+pub const METHOD_PATCH_APPLY: &str = "patch.apply";
+pub const METHOD_PATCH_ROLLBACK: &str = "patch.rollback";
+
+/// Wire shape of a patch plan. The `op` field tags the variant, matching the
+/// `#[serde(tag = "op")]` enum in `pf-patch`. Kept as `Value` at the
+/// protocol boundary so new op kinds do not break older clients: the server
+/// decodes and rejects unknown ops, the JSON-RPC schema only guarantees
+/// `ops: Array<Object>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchPlanDto {
+    pub ops: Vec<Value>,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchPreviewParams {
+    pub workspace_id: WorkspaceId,
+    pub plan: PatchPlanDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchPreviewResult {
+    pub total_replacements: usize,
+    pub files: Vec<FilePatchDto>,
+    pub errors: Vec<FilePatchError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePatchDto {
+    pub path: String,
+    pub before_len: usize,
+    pub after_len: usize,
+    pub replacements: usize,
+    pub diff: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePatchError {
+    pub file: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchApplyParams {
+    pub workspace_id: WorkspaceId,
+    pub plan: PatchPlanDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchApplyResult {
+    pub applied: bool,
+    pub commit_id: Option<String>,
+    pub files_written: usize,
+    pub bytes_written: u64,
+    pub total_replacements: usize,
+    pub validation: ValidationReportDto,
+    /// `None` when the patch applied cleanly, `Some(reason)` when it was
+    /// rejected (validation failure, preflight mismatch, or rollback).
+    pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ValidationReportDto {
+    pub ok: bool,
+    pub stages: Vec<StageReportDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageReportDto {
+    pub stage: String,
+    pub ok: bool,
+    pub diagnostics: Vec<DiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticDto {
+    pub severity: String,
+    pub file: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchRollbackParams {
+    pub workspace_id: WorkspaceId,
+    pub commit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchRollbackResult {
+    pub rolled_back: bool,
+    pub commit_id: String,
+    pub files_restored: usize,
+    pub label: String,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RulesLoadParams {
     pub workspace_id: WorkspaceId,
