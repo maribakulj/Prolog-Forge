@@ -174,6 +174,39 @@ def main() -> int:
         prop2 = recv(proc)["result"]
         assert prop2["cache_hit"] is True, prop2
 
+        # ---- llm.refine: the revision loop. Feed the rejected
+        # hallucination from llm.propose back as a prior outcome. The
+        # refiner must drop it and converge in one round with zero
+        # rejections.
+        rejected_prior = [
+            o for o in prop["outcomes"] if not o["accepted"]
+        ]
+        assert rejected_prior, prop
+        send(proc, {
+            "jsonrpc": "2.0", "id": 131, "method": "llm.refine",
+            "params": {
+                "workspace_id": ws2,
+                "intent": "refine purity after hallucination",
+                "anchor_id": anchor,
+                "hops": 1,
+                "max_rounds": 3,
+                "prior_outcomes": rejected_prior,
+                "prior_diagnostics": [],
+            },
+        })
+        refine = recv(proc)["result"]
+        assert refine["converged"] is True, refine
+        assert refine["final_rejected"] == 0, refine
+        assert refine["rounds"] == 1, refine
+        assert all(
+            o["round"] is not None and o["round"] >= 1 for o in refine["outcomes"]
+        ), refine
+        # The hallucinated id must not reappear in any outcome.
+        bogus_args = [a for o in rejected_prior for a in o["args"]]
+        for o in refine["outcomes"]:
+            for a in o["args"]:
+                assert a not in bogus_args, (o, bogus_args)
+
         # ---- patch.preview (rename) --------------------------------------
         send(proc, {
             "jsonrpc": "2.0", "id": 14, "method": "patch.preview",
@@ -307,6 +340,69 @@ def main() -> int:
         assert "rules" in stage_names, gated
         with open(os.path.join(scratch2_demo, "src/lib.rs")) as f:
             assert "pub fn add(" in f.read(), "rule gate must prevent the write"
+
+        # ---- explain.patch on the same gated plan: should produce a
+        # Rejected verdict naming the "rules" stage as the culprit, plus a
+        # stage-evidence node for each stage that ran.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 211, "method": "explain.patch",
+            "params": {
+                "workspace_id": ws3,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: explain gated plan",
+                },
+                "candidate_outcomes": [],
+            },
+        })
+        explained = recv(proc)["result"]
+        assert explained["verdict"]["kind"] == "rejected", explained
+        assert "rules" in explained["verdict"]["failing_stages"], explained
+        assert explained["stats"]["stages_run"] >= 2, explained
+        stage_nodes = [
+            e for e in explained["evidence"] if e["kind"] == "stage"
+        ]
+        assert any(not s["ok"] and s["name"] == "rules" for s in stage_nodes), explained
+        # Anchors must include both old and new names.
+        assert "add" in explained["anchors"] and "sum" in explained["anchors"], explained
+
+        # ---- explain.patch on an *unrule'd* workspace: with no semantic
+        # stage available, the verdict must be `not_proven` (syntactic-only
+        # evidence is not a proof). Reuse the clean scratch demo.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 212, "method": "workspace.open",
+            "params": {"root": scratch_demo},
+        })
+        ws_explain = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 213, "method": "workspace.index",
+            "params": {"workspace_id": ws_explain},
+        })
+        recv(proc)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 214, "method": "explain.patch",
+            "params": {
+                "workspace_id": ws_explain,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "sum",
+                        "new_name": "total",
+                        "files": [],
+                    }],
+                    "label": "smoke: explain clean plan",
+                },
+                "candidate_outcomes": [],
+            },
+        })
+        explained_clean = recv(proc)["result"]
+        assert explained_clean["verdict"]["kind"] == "not_proven", explained_clean
+        assert explained_clean["stats"]["stages_run"] == 1, explained_clean
 
         # ---- full loop: apply -> rollback -> verify disk restored.
         scratch3_root = tempfile.mkdtemp(prefix="pf-smoke-rollback-")

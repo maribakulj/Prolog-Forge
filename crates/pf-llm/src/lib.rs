@@ -23,9 +23,11 @@ pub mod context;
 pub mod prompt;
 pub mod propose;
 pub mod provider;
+pub mod refine;
 
 pub use cache::ResponseCache;
 pub use context::ContextSelector;
 pub use prompt::PromptBuilder;
 pub use propose::{propose, ProposalOutcome, ProposeRequest, ProposeResult};
 pub use provider::{LlmError, LlmProvider, LlmRequest, LlmResponse, MockProvider};
+pub use refine::{refine, RefineRequest, RefineResult, RefinerDiagnostic, RoundSummary};

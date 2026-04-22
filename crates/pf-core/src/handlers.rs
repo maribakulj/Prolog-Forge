@@ -20,9 +20,11 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_RULES_LOAD => handle_rules_load(core, params),
         METHOD_RULES_EVALUATE => handle_rules_eval(core, params),
         METHOD_LLM_PROPOSE => handle_llm_propose(core, params),
+        METHOD_LLM_REFINE => handle_llm_refine(core, params),
         METHOD_PATCH_PREVIEW => handle_patch_preview(core, params),
         METHOD_PATCH_APPLY => handle_patch_apply(core, params),
         METHOD_PATCH_ROLLBACK => handle_patch_rollback(core, params),
+        METHOD_EXPLAIN_PATCH => handle_explain_patch(core, params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -48,9 +50,11 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_RULES_LOAD.into(),
             METHOD_RULES_EVALUATE.into(),
             METHOD_LLM_PROPOSE.into(),
+            METHOD_LLM_REFINE.into(),
             METHOD_PATCH_PREVIEW.into(),
             METHOD_PATCH_APPLY.into(),
             METHOD_PATCH_ROLLBACK.into(),
+            METHOD_EXPLAIN_PATCH.into(),
         ],
     };
     Ok(serde_json::to_value(caps).unwrap())
@@ -507,10 +511,332 @@ fn handle_llm_propose(core: &Core, params: Value) -> Result<Value, RpcError> {
                 justification: o.justification,
                 accepted: o.accepted,
                 rejection_reason: o.rejection_reason,
+                round: Some(0),
             })
             .collect(),
     })
     .unwrap())
+}
+
+fn handle_llm_refine(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: LlmRefineParams = decode(params)?;
+
+    let prior_outcomes: Vec<pf_llm::ProposalOutcome> = p
+        .prior_outcomes
+        .into_iter()
+        .map(|o| pf_llm::ProposalOutcome {
+            predicate: o.predicate,
+            args: o.args,
+            justification: o.justification,
+            accepted: o.accepted,
+            rejection_reason: o.rejection_reason,
+        })
+        .collect();
+    let prior_diagnostics: Vec<pf_llm::RefinerDiagnostic> = p
+        .prior_diagnostics
+        .into_iter()
+        .map(|d| pf_llm::RefinerDiagnostic {
+            severity: d.severity,
+            file: d.file,
+            message: d.message,
+        })
+        .collect();
+
+    let result = core
+        .with_workspace(&p.workspace_id, |_ws, st| {
+            pf_llm::refine(
+                core.llm_provider.as_ref(),
+                &core.llm_cache,
+                &mut st.graph,
+                pf_llm::RefineRequest {
+                    intent: &p.intent,
+                    anchor_id: &p.anchor_id,
+                    hops: p.hops,
+                    max_facts: p.max_facts,
+                    max_rounds: p.max_rounds,
+                    max_tokens: 1024,
+                    temperature: 0.0,
+                    prior_outcomes,
+                    prior_diagnostics,
+                },
+            )
+            .map_err(|e| RpcError::internal(e.to_string()))
+        })
+        .map_err(RpcError::invalid_params)??;
+
+    // Re-annotate per-round so the wire payload tells callers which
+    // hypotheses came from which iteration. The loop already emits
+    // `rounds_summary[i].{accepted,rejected}` which totals to the same
+    // counts; we walk the outcome list in that order.
+    let mut annotated = Vec::with_capacity(result.outcomes.len());
+    let mut iter = result.outcomes.into_iter();
+    for rs in &result.rounds_summary {
+        let take = rs.accepted + rs.rejected;
+        for _ in 0..take {
+            if let Some(o) = iter.next() {
+                annotated.push(ProposalOutcomeDto {
+                    predicate: o.predicate,
+                    args: o.args,
+                    justification: o.justification,
+                    accepted: o.accepted,
+                    rejection_reason: o.rejection_reason,
+                    round: Some(rs.round),
+                });
+            }
+        }
+    }
+    // Drain any leftover (should not happen, but keep the data).
+    for o in iter {
+        annotated.push(ProposalOutcomeDto {
+            predicate: o.predicate,
+            args: o.args,
+            justification: o.justification,
+            accepted: o.accepted,
+            rejection_reason: o.rejection_reason,
+            round: None,
+        });
+    }
+
+    Ok(serde_json::to_value(LlmRefineResult {
+        rounds: result.rounds,
+        converged: result.converged,
+        final_accepted: result.final_accepted,
+        final_rejected: result.final_rejected,
+        tokens_in_total: result.tokens_in_total,
+        tokens_out_total: result.tokens_out_total,
+        outcomes: annotated,
+        rounds_summary: result
+            .rounds_summary
+            .into_iter()
+            .map(|s| RefineRoundSummary {
+                round: s.round,
+                accepted: s.accepted,
+                rejected: s.rejected,
+                cache_hit: s.cache_hit,
+                tokens_in: s.tokens_in,
+                tokens_out: s.tokens_out,
+            })
+            .collect(),
+    })
+    .unwrap())
+}
+
+fn handle_explain_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
+    use pf_validate::{Pipeline, ValidationContext, ValidationStage};
+
+    let p: ExplainPatchParams = decode(params)?;
+
+    // Decode the plan the same way patch.preview/apply do.
+    let mut ops: Vec<pf_patch::PatchOp> = Vec::with_capacity(p.plan.ops.len());
+    for raw in &p.plan.ops {
+        let op: pf_patch::PatchOp = serde_json::from_value(raw.clone())
+            .map_err(|e| RpcError::invalid_params(format!("bad op: {e}")))?;
+        ops.push(op);
+    }
+    let plan = pf_patch::PatchPlan::labelled(ops.clone(), p.plan.label.clone());
+    let anchors: Vec<String> = anchors_from_ops(&ops);
+
+    // Load originals + rules snapshot.
+    let (root, original, rules) = core
+        .with_workspace(&p.workspace_id, |w, st| {
+            let root = std::path::PathBuf::from(&w.root);
+            let mut map: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for sf in pf_ingest::walk(&root, &pf_ingest::IngestOptions::default()) {
+                if sf.language != "rust" {
+                    continue;
+                }
+                if let Ok(src) = std::fs::read_to_string(&sf.path) {
+                    map.insert(sf.relative.display().to_string(), src);
+                }
+            }
+            (root, map, st.rules.clone())
+        })
+        .map_err(RpcError::invalid_params)?;
+    let _ = root; // explainer is pure; we don't write to disk
+
+    // Build shadow + run validation (same pipeline as patch.apply, but no
+    // transactional write).
+    let shadow = build_shadow(&plan, &original);
+    let mut stages: Vec<Box<dyn ValidationStage>> = vec![Box::new(pf_validate::SyntacticStage)];
+    if !rules.is_empty() {
+        stages.push(Box::new(crate::validate_stages::RuleStage::new(
+            rules.clone(),
+        )));
+    }
+    let validation = Pipeline::custom(stages).run(&ValidationContext {
+        shadow_files: &shadow,
+        original_files: &original,
+    });
+
+    // Adapt the validation report into the explainer's stage view.
+    let stage_refs: Vec<pf_explain::ValidationStageRef> = validation
+        .stages
+        .iter()
+        .map(|s| pf_explain::ValidationStageRef {
+            name: s.stage.clone(),
+            ok: s.ok,
+            diagnostics: s
+                .diagnostics
+                .iter()
+                .map(|d| pf_explain::model::StageDiagnostic {
+                    severity: match d.severity {
+                        pf_validate::Severity::Error => "error".into(),
+                        pf_validate::Severity::Warning => "warning".into(),
+                        pf_validate::Severity::Info => "info".into(),
+                    },
+                    file: d.file.clone(),
+                    message: d.message.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+
+    // Candidate outcomes passed by the caller (may be empty).
+    let candidate_refs: Vec<pf_explain::CandidateRef> = p
+        .candidate_outcomes
+        .iter()
+        .map(|o| pf_explain::CandidateRef {
+            predicate: o.predicate.clone(),
+            args: o.args.clone(),
+            justification: o.justification.clone(),
+            accepted: o.accepted,
+            rejection_reason: o.rejection_reason.clone(),
+            round: o.round,
+        })
+        .collect();
+
+    // Build the explanation under a read-lock on the workspace so the
+    // graph snapshot is coherent with the rules we ran.
+    let explanation = core
+        .with_workspace(&p.workspace_id, |_ws, st| {
+            let rejection_reason = if validation.ok {
+                None
+            } else {
+                Some("validation failed".to_string())
+            };
+            pf_explain::build(pf_explain::ExplainInput {
+                plan_label: &p.plan.label,
+                anchors: &anchors,
+                graph: &st.graph,
+                rules: &rules,
+                candidate_outcomes: &candidate_refs,
+                validation_stages: &stage_refs,
+                commit_id: None,
+                rejection_reason,
+            })
+        })
+        .map_err(RpcError::invalid_params)?;
+
+    Ok(serde_json::to_value(explanation_to_dto(explanation)).unwrap())
+}
+
+fn anchors_from_ops(ops: &[pf_patch::PatchOp]) -> Vec<String> {
+    let mut out = Vec::new();
+    for op in ops {
+        match op {
+            pf_patch::PatchOp::RenameFunction {
+                old_name, new_name, ..
+            } => {
+                out.push(old_name.clone());
+                out.push(new_name.clone());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn explanation_to_dto(e: pf_explain::Explanation) -> ExplainPatchResult {
+    ExplainPatchResult {
+        plan_label: e.plan_label,
+        anchors: e.anchors,
+        verdict: match e.verdict {
+            pf_explain::Verdict::Accepted { commit_id, notes } => {
+                VerdictDto::Accepted { commit_id, notes }
+            }
+            pf_explain::Verdict::Rejected {
+                reason,
+                failing_stages,
+            } => VerdictDto::Rejected {
+                reason,
+                failing_stages,
+            },
+            pf_explain::Verdict::NotProven { reason } => VerdictDto::NotProven { reason },
+        },
+        evidence: e.evidence.into_iter().map(evidence_to_dto).collect(),
+        stats: ExplanationStatsDto {
+            anchors: e.stats.anchors,
+            observed_cited: e.stats.observed_cited,
+            inferred_cited: e.stats.inferred_cited,
+            rule_activations: e.stats.rule_activations,
+            candidates_considered: e.stats.candidates_considered,
+            stages_run: e.stats.stages_run,
+        },
+        summary: e.summary,
+    }
+}
+
+fn evidence_to_dto(n: pf_explain::EvidenceNode) -> EvidenceNodeDto {
+    match n {
+        pf_explain::EvidenceNode::Observed {
+            predicate,
+            args,
+            role,
+        } => EvidenceNodeDto::Observed {
+            predicate,
+            args,
+            role,
+        },
+        pf_explain::EvidenceNode::Inferred { predicate, args } => {
+            EvidenceNodeDto::Inferred { predicate, args }
+        }
+        pf_explain::EvidenceNode::RuleActivation {
+            rule_index,
+            head,
+            premises,
+        } => EvidenceNodeDto::RuleActivation {
+            rule_index,
+            head: PremiseFactDto {
+                predicate: head.predicate,
+                args: head.args,
+                layer: head.layer,
+            },
+            premises: premises
+                .into_iter()
+                .map(|p| PremiseFactDto {
+                    predicate: p.predicate,
+                    args: p.args,
+                    layer: p.layer,
+                })
+                .collect(),
+        },
+        pf_explain::EvidenceNode::Candidate(c) => EvidenceNodeDto::Candidate {
+            predicate: c.predicate,
+            args: c.args,
+            justification: c.justification,
+            accepted: c.accepted,
+            rejection_reason: c.rejection_reason,
+            round: c.round,
+        },
+        pf_explain::EvidenceNode::Stage {
+            name,
+            ok,
+            diagnostics,
+        } => EvidenceNodeDto::Stage {
+            name,
+            ok,
+            diagnostics: diagnostics
+                .into_iter()
+                .map(|d| DiagnosticDto {
+                    severity: d.severity,
+                    file: d.file,
+                    message: d.message,
+                })
+                .collect(),
+        },
+    }
 }
 
 fn handle_rules_eval(core: &Core, params: Value) -> Result<Value, RpcError> {

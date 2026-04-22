@@ -21,7 +21,9 @@
 pub mod ast;
 pub mod eval;
 pub mod parser;
+pub mod trace;
 
 pub use ast::{Atom, Program, Rule, Term};
 pub use eval::{evaluate, EvalStats};
 pub use parser::{parse, ParseError};
+pub use trace::{trace_derivations, Derivation};

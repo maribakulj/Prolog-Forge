@@ -60,6 +60,7 @@ impl LlmProvider for MockProvider {
     fn complete(&self, req: &LlmRequest) -> Result<LlmResponse, LlmError> {
         let text = match req.schema_id.as_str() {
             "propose.v1" => mock_propose(&req.user),
+            "refine.v1" => mock_refine(&req.user),
             _ => r#"{"candidates":[]}"#.to_string(),
         };
         Ok(LlmResponse {
@@ -82,10 +83,66 @@ fn estimate_tokens(s: &str) -> u32 {
 /// This exercises the identifier-resolution guard downstream without needing
 /// an actual LLM.
 fn mock_propose(user: &str) -> String {
+    let mut out = propose_from_context(user);
+    // Always add one hallucinated identifier so the anti-hallucination
+    // filter is exercised by the smoke test.
+    out.push(serde_json::json!({
+        "predicate": "pure",
+        "args": ["does_not_exist_in_graph"],
+        "justification": "intentional hallucination to exercise the resolver"
+    }));
+    serde_json::json!({ "candidates": out }).to_string()
+}
+
+/// The `refine.v1` mock re-reads the same `function(<id>, <name>)` lines
+/// from the context but skips any identifier the prompt already flagged as
+/// a "Prior rejection". This models the minimum neuro-symbolic revision
+/// loop the real provider is expected to exhibit: the structured feedback
+/// shrinks the hypothesis space.
+fn mock_refine(user: &str) -> String {
+    let banned = extract_rejected_ids(user);
+    let proposals = propose_from_context(user)
+        .into_iter()
+        .filter(|p| {
+            p.get("args")
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .all(|id| !banned.iter().any(|b| b == id))
+                })
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "candidates": proposals }).to_string()
+}
+
+/// Scan the rendered context for `function(<id>, <name>).` lines and emit
+/// one `pure(<id>)` candidate per match. Shared between the proposer and
+/// the refiner so both see the same base hypothesis set.
+fn propose_from_context(user: &str) -> Vec<serde_json::Value> {
+    // Only read context lines — not the "Prior rejections" block, whose
+    // `pure(id)` entries would otherwise be re-proposed as fresh candidates.
+    let mut in_context = false;
     let mut out = Vec::new();
     for line in user.lines() {
-        let line = line.trim().trim_end_matches('.');
-        if let Some(rest) = line.strip_prefix("function(") {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Context (") {
+            in_context = true;
+            continue;
+        }
+        if trimmed.starts_with("Prior rejections")
+            || trimmed.starts_with("Prior validator diagnostics")
+            || trimmed.starts_with("Respond with JSON")
+        {
+            in_context = false;
+            continue;
+        }
+        if !in_context {
+            continue;
+        }
+        let trimmed = trimmed.trim_end_matches('.');
+        if let Some(rest) = trimmed.strip_prefix("function(") {
             if let Some(end) = rest.find(')') {
                 let inner = &rest[..end];
                 let parts: Vec<&str> = inner.splitn(2, ',').map(|s| s.trim()).collect();
@@ -99,14 +156,43 @@ fn mock_propose(user: &str) -> String {
             }
         }
     }
-    // Always add one hallucinated identifier so the anti-hallucination
-    // filter is exercised by the smoke test.
-    out.push(serde_json::json!({
-        "predicate": "pure",
-        "args": ["does_not_exist_in_graph"],
-        "justification": "intentional hallucination to exercise the resolver"
-    }));
-    serde_json::json!({ "candidates": out }).to_string()
+    out
+}
+
+/// Parse the "Prior rejections" block and extract every argument id that
+/// appeared inside `pred(<args>)`. Used by the refiner mock to avoid
+/// re-proposing known hallucinations.
+fn extract_rejected_ids(user: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in user.lines() {
+        let t = line.trim();
+        if t.starts_with("Prior rejections") {
+            in_block = true;
+            continue;
+        }
+        if t.starts_with("Prior validator diagnostics") || t.starts_with("Respond with JSON") {
+            in_block = false;
+        }
+        if !in_block {
+            continue;
+        }
+        // Line format: "- pred(arg1, arg2) — reason"
+        let Some(stripped) = t.strip_prefix("- ") else {
+            continue;
+        };
+        let Some(open) = stripped.find('(') else {
+            continue;
+        };
+        let Some(close) = stripped[open..].find(')') else {
+            continue;
+        };
+        let inner = &stripped[open + 1..open + close];
+        for id in inner.split(',') {
+            out.push(id.trim().to_string());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -117,7 +203,11 @@ mod tests {
     fn mock_proposes_one_per_function_plus_hallucination() {
         let req = LlmRequest {
             system: "s".into(),
-            user: "function(id_a, a)\nfunction(id_b, b)".into(),
+            user: "Context (observed facts):\n\
+                   function(id_a, a).\n\
+                   function(id_b, b).\n\
+                   Respond with JSON only, no prose."
+                .into(),
             schema_id: "propose.v1".into(),
             max_tokens: 1024,
             temperature: 0.0,
@@ -125,5 +215,33 @@ mod tests {
         let r = MockProvider.complete(&req).unwrap();
         let v: serde_json::Value = serde_json::from_str(&r.text).unwrap();
         assert_eq!(v["candidates"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn refine_mock_drops_previously_rejected_ids() {
+        let req = LlmRequest {
+            system: "s".into(),
+            user: "Context (observed facts):\n\
+                   function(id_a, a).\n\
+                   function(id_b, b).\n\
+                   Prior rejections (do not repeat these):\n\
+                   - pure(id_b) — doctrinal rejection example\n\
+                   Prior validator diagnostics (address these):\n(none)\n\
+                   Respond with JSON only, no prose."
+                .into(),
+            schema_id: "refine.v1".into(),
+            max_tokens: 1024,
+            temperature: 0.0,
+        };
+        let r = MockProvider.complete(&req).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&r.text).unwrap();
+        let cands = v["candidates"].as_array().unwrap();
+        // id_b is banned by prior rejections -> only id_a survives, no
+        // hallucination added (refine is strict, not exploratory).
+        assert_eq!(cands.len(), 1);
+        assert_eq!(
+            cands[0]["args"].as_array().unwrap()[0].as_str(),
+            Some("id_a")
+        );
     }
 }

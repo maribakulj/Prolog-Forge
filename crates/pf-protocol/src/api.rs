@@ -141,6 +141,7 @@ pub const METHOD_RULES_LIST: &str = "rules.list";
 // ---------- llm -----------------------------------------------------------
 
 pub const METHOD_LLM_PROPOSE: &str = "llm.propose";
+pub const METHOD_LLM_REFINE: &str = "llm.refine";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmProposeParams {
@@ -178,6 +179,156 @@ pub struct ProposalOutcomeDto {
     pub justification: String,
     pub accepted: bool,
     pub rejection_reason: Option<String>,
+    /// Round index (0 for the first proposer pass, ≥ 1 for refinement
+    /// rounds). Optional for backwards compatibility with `llm.propose`,
+    /// which does not loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
+}
+
+// ---------- llm.refine ----------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRefineParams {
+    pub workspace_id: WorkspaceId,
+    pub intent: String,
+    pub anchor_id: String,
+    #[serde(default = "default_hops")]
+    pub hops: usize,
+    #[serde(default = "default_max_facts")]
+    pub max_facts: usize,
+    /// Cap on refinement rounds (including the initial proposer pass).
+    /// The loop also breaks early on convergence (no rejections in a
+    /// round). Default: 3.
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: u32,
+    /// Prior outcomes (typically from an earlier `llm.propose` or a failed
+    /// `patch.apply`). Passed to the provider as structured feedback so the
+    /// next round can drop hallucinations or pivot.
+    #[serde(default)]
+    pub prior_outcomes: Vec<ProposalOutcomeDto>,
+    /// Validation diagnostics the refiner should take into account (for
+    /// instance, the stage diagnostics from a rejected `patch.apply`). They
+    /// are rendered into the prompt as structured feedback, not free text.
+    #[serde(default)]
+    pub prior_diagnostics: Vec<DiagnosticDto>,
+}
+
+fn default_max_rounds() -> u32 {
+    3
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRefineResult {
+    pub rounds: u32,
+    pub converged: bool,
+    pub final_accepted: usize,
+    pub final_rejected: usize,
+    pub tokens_in_total: u32,
+    pub tokens_out_total: u32,
+    /// All outcomes across all rounds, annotated with their `round` index.
+    pub outcomes: Vec<ProposalOutcomeDto>,
+    /// Per-round summary, parallel to the loop iterations actually run.
+    pub rounds_summary: Vec<RefineRoundSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineRoundSummary {
+    pub round: u32,
+    pub accepted: usize,
+    pub rejected: usize,
+    pub cache_hit: bool,
+    pub tokens_in: u32,
+    pub tokens_out: u32,
+}
+
+// ---------- explain.patch -------------------------------------------------
+
+pub const METHOD_EXPLAIN_PATCH: &str = "explain.patch";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainPatchParams {
+    pub workspace_id: WorkspaceId,
+    pub plan: PatchPlanDto,
+    /// Optional candidate outcomes to cite in the explanation (typically
+    /// forwarded from a recent `llm.propose` / `llm.refine`).
+    #[serde(default)]
+    pub candidate_outcomes: Vec<ProposalOutcomeDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainPatchResult {
+    pub plan_label: String,
+    pub anchors: Vec<String>,
+    pub verdict: VerdictDto,
+    pub evidence: Vec<EvidenceNodeDto>,
+    pub stats: ExplanationStatsDto,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VerdictDto {
+    Accepted {
+        commit_id: Option<String>,
+        notes: Vec<String>,
+    },
+    Rejected {
+        reason: String,
+        failing_stages: Vec<String>,
+    },
+    NotProven {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EvidenceNodeDto {
+    Observed {
+        predicate: String,
+        args: Vec<String>,
+        role: String,
+    },
+    Inferred {
+        predicate: String,
+        args: Vec<String>,
+    },
+    RuleActivation {
+        rule_index: usize,
+        head: PremiseFactDto,
+        premises: Vec<PremiseFactDto>,
+    },
+    Candidate {
+        predicate: String,
+        args: Vec<String>,
+        justification: String,
+        accepted: bool,
+        rejection_reason: Option<String>,
+        round: Option<u32>,
+    },
+    Stage {
+        name: String,
+        ok: bool,
+        diagnostics: Vec<DiagnosticDto>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PremiseFactDto {
+    pub predicate: String,
+    pub args: Vec<String>,
+    pub layer: FactLayer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExplanationStatsDto {
+    pub anchors: usize,
+    pub observed_cited: usize,
+    pub inferred_cited: usize,
+    pub rule_activations: usize,
+    pub candidates_considered: usize,
+    pub stages_run: usize,
 }
 
 // ---------- patch ---------------------------------------------------------

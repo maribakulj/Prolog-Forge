@@ -11,14 +11,16 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 5** — everything from step 4 plus a rule-stage
-> apply-gate (rule packs with `violation(...)` heads block applies that
-> introduce constraint violations), a disk-persistent commit journal at
-> `<root>/.prolog-forge/journal/`, and `patch.rollback` which undoes an
-> applied commit atomically with an optimistic-concurrency preflight
-> against the on-disk state. The MVP loop — **index → rules →
-> LLM candidates → patch → validate → apply → journal → rollback** —
-> is now closed end-to-end. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 6** — everything from step 5 plus a bounded
+> neuro-symbolic **refinement loop** (`llm.refine`: iterative
+> `candidate → diagnostics → revised candidate` with per-round budget
+> accounting, convergence detection, and strict anti-hallucination carryover)
+> and a **proof-carrying explainer** (`explain.patch`: observed facts cited,
+> rule activations with premises, candidates considered, validation stages
+> + diagnostics, verdict ∈ `accepted` / `rejected` / `not_proven`).
+> The MVP loop — **index → rules → LLM candidates → refine →
+> explain → patch → validate → apply → journal → rollback** —
+> is now closed *and* articulated end-to-end. See [Roadmap](#roadmap).
 
 ---
 
@@ -69,11 +71,12 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     ├── CSM             (v0 shipped)
                                     ├── knowledge graph (Phase 0 ✓)
                                     ├── rule engine     (Phase 0 ✓)
-                                    ├── LLM orchestrator (Phase 1.2 ✓)
+                                    ├── LLM orchestrator (Phase 1.2 ✓, propose)
+                                    │   └── refinement  (Phase 1.6 ✓, iterative llm.refine)
                                     ├── patch planner    (Phase 1.3 ✓)
                                     ├── validator        (Phase 1.4–5 ✓, syntactic + rule)
                                     ├── commit journal   (Phase 1.5 ✓, JSON on disk)
-                                    └── explainer        (Phase 2)
+                                    └── explainer        (Phase 1.6 ✓, proof-carrying patches)
 ```
 
 The Core is a Rust workspace. Every module has a single role and a narrow
@@ -88,10 +91,11 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-persist`](crates/pf-persist) | KV trait + in-memory backend |
 | [`pf-ingest`](crates/pf-ingest) | Filesystem walker and source dispatch |
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
-| [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard |
+| [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard, one-shot `propose` + iterative `refine` loop |
 | [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate Rust rename |
 | [`pf-validate`](crates/pf-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline` |
-| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `patch.preview` + `patch.apply` |
+| [`pf-explain`](crates/pf-explain) | Proof-carrying explainer: composes observed / inferred / candidate evidence + rule activations + validation stages into a single `Explanation` with a synthesized verdict |
+| [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `llm.refine` + `patch.preview` + `patch.apply` + `explain.patch` |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
@@ -177,6 +181,62 @@ the survivors at `FactLayer::Candidate`. Candidates are **never** promoted
 automatically — a human (or a future validation pipeline) is required to
 move them to `validated`. Default provider is the deterministic
 `MockProvider`; network providers slot in behind the same trait.
+
+### Close the loop: neuro-symbolic refinement
+
+```bash
+$ pf refine examples/rust-demo \
+    --anchor 'src/lib.rs#fn:add@src/lib.rs#file' \
+    --intent 'refine invariants after validator feedback' \
+    --rounds 3
+refine: 1 round(s), converged=true, accepted=1, rejected=0 (tokens_in=491, tokens_out=34)
+  round 1: accepted=1 rejected=0 cache_hit=false tokens=491+34
+  ACCEPT r1 pure(src/lib.rs#fn:add@src/lib.rs#file) — no side effects observed for add
+```
+
+`llm.refine` is the iterative counterpart of `llm.propose`. Each round
+renders a `refine.v1` prompt that carries forward **every** prior
+rejection reason and validator diagnostic as structured feedback, so the
+next round is provably better-informed than the last. The loop converges
+early when a round produces zero rejections and is capped by
+`max_rounds`. Every surviving candidate is tagged with the round that
+produced it. Callers typically wire the output of a rejected
+`patch.apply` (validation diagnostics) or a rejected `llm.propose`
+(hallucinated identifiers) into the next `llm.refine` call, closing the
+feedback loop without any free-form prompting.
+
+### Proof-carrying patches: `explain.patch`
+
+```bash
+$ pf explain examples/rust-demo --from add --to sum --verbose
+rename add -> sum: not proven — 2 observed · 0 inferred · 0 rule(s) · 0 candidate(s) · 1 stage(s)
+verdict: not proven (syntactic validation only; no rule / type / behavioral evidence)
+stats: 2 anchor(s), 2 observed, 0 inferred, 0 rule activation(s), 0 candidate(s), 1 stage(s)
+evidence:
+  observed[neighbor] function(src/lib.rs#fn:add@src/lib.rs#file, add)
+  observed[neighbor] ref_name(src/lib.rs#ref:add, add)
+  stage[PASS]    syntactic
+```
+
+`explain.patch` produces a structured **proof-carrying explanation** of
+a typed plan without touching the filesystem: the observed facts cited,
+the rule activations (with head + premises) that touch the plan's
+anchors, the candidates considered (with their justifications and
+rejection reasons, if any), each validation stage's verdict and
+diagnostics, and a three-state final judgment:
+
+- **`accepted`** — the pipeline produced real evidence (rules, types,
+  behaviors) *and* every stage passed.
+- **`rejected`** — at least one stage failed; the failing stage names
+  and their diagnostics are listed.
+- **`not_proven`** — every stage passed, but the pipeline was too thin
+  to count as a proof (e.g. only the syntactic stage ran). The runtime
+  prefers to admit ignorance rather than conflate "parses" with "safe".
+
+This is what makes the project claim "neuro-symbolic runtime" legible:
+the same patch is visible as (a) an LLM proposal, (b) a set of
+symbolic constraints, (c) a validation trace, and (d) a verdict, all
+in one artifact.
 
 ### Preview a structured patch
 
@@ -279,9 +339,11 @@ CI and is the minimal reference client.
 | `rules.load` | Parse and register a Datalog source block. |
 | `rules.evaluate` | Run the engine to fixpoint. |
 | `llm.propose` | Bounded LLM proposal → candidate facts with identifier resolution. |
+| `llm.refine` | Iterative refinement loop: rejections + diagnostics fed back to the model round after round until convergence or `max_rounds`. |
 | `patch.preview` | Simulate a typed `PatchPlan` against the workspace, return per-file unified diffs. FS untouched. |
 | `patch.apply` | Validate + preflight + atomic write + journal. Returns `{applied, commit_id, validation, rejection_reason}`. |
 | `patch.rollback` | Restore a committed patch. Preflight + atomic restore + journal delete. |
+| `explain.patch` | Proof-carrying explanation for a plan: observed facts cited, rule activations with premises, candidates considered, validation stages, verdict. FS untouched. |
 
 Typed schemas live in [`schemas/protocol.json`](schemas/protocol.json). The
 Rust wire types in `pf-protocol` are kept in sync with that file by hand in
@@ -335,7 +397,7 @@ Phase 0; schema-first codegen is a Phase 1 item.
 - LLM orchestrator, tool-use, prompt graph — **Phase 1**.
 - Patch planner and AST-level edit ops — **Phase 1**.
 - Validation pipeline (syntactic / type / rule / behavioral) — **Phase 1**.
-- Explainer / proof-tree renderer — **Phase 2**.
+- Web proof-tree renderer (the `explain.patch` JSON is shipped; the UI that visualizes it is **Phase 2**).
 - Pattern mining and rule promotion (`candidate` → `validated`) — **Phase 3**.
 - Disk-backed persistence (RocksDB / SQLite) — **Phase 1**.
 - Notifications, streaming, cancellation — **Phase 1**.
@@ -355,8 +417,9 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.3** | `pf-patch`, `patch.preview`, typed ops, byte-accurate Rust rename, unified diffs, `pf rename` CLI | **shipped** |
 | **1.4** | `pf-validate` (pluggable stages), `patch.apply` with preflight + atomic write + rollback, `pf rename --apply` | **shipped (syntactic stage)** |
 | **1.5** | `RuleStage` (`violation/*` apply-gate), disk-persistent commit journal, `patch.rollback`, `pf rollback` CLI | **shipped** |
-| 1.6 (MVP rest) | Type-aware rename (rust-analyzer), behavioral validation stage, VS Code adapter minimal | 2–3 months |
-| 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer | 5–8 months |
+| **1.6** | `pf-explain` + `explain.patch` (proof-carrying patches), `llm.refine` (iterative `candidate → diagnostics → revised candidate` loop), `pf explain` / `pf refine` CLI | **shipped** |
+| 1.7 (MVP rest) | Type-aware rename (rust-analyzer), behavioral validation stage, VS Code adapter minimal | 2–3 months |
+| 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |
 | 5 | Third-party analyzers SDK, vertical rule packs, CI/CD-native integrations | 18+ months |

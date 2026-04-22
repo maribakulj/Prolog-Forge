@@ -19,6 +19,27 @@
       }
     },
     "WorkspaceId": { "type": "string", "pattern": "^ws-\\d+$" },
+    "ProposalOutcome": {
+      "type": "object",
+      "required": ["predicate", "args", "justification", "accepted"],
+      "properties": {
+        "predicate": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "justification": { "type": "string" },
+        "accepted": { "type": "boolean" },
+        "rejection_reason": { "type": ["string", "null"] },
+        "round": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "Diagnostic": {
+      "type": "object",
+      "required": ["severity", "message"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+        "file": { "type": ["string", "null"] },
+        "message": { "type": "string" }
+      }
+    },
     "ClientCapabilities": {
       "type": "object",
       "required": ["name", "version"],
@@ -329,18 +350,136 @@
           "tokens_out": { "type": "integer", "minimum": 0 },
           "outcomes": {
             "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          }
+        }
+      }
+    },
+    "llm.refine": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "intent", "anchor_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "intent": { "type": "string" },
+          "anchor_id": { "type": "string" },
+          "hops": { "type": "integer", "minimum": 0, "default": 1 },
+          "max_facts": { "type": "integer", "minimum": 1, "default": 256 },
+          "max_rounds": { "type": "integer", "minimum": 1, "default": 3 },
+          "prior_outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          },
+          "prior_diagnostics": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/Diagnostic" }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "rounds", "converged", "final_accepted", "final_rejected",
+          "tokens_in_total", "tokens_out_total", "outcomes", "rounds_summary"
+        ],
+        "properties": {
+          "rounds": { "type": "integer", "minimum": 0 },
+          "converged": { "type": "boolean" },
+          "final_accepted": { "type": "integer", "minimum": 0 },
+          "final_rejected": { "type": "integer", "minimum": 0 },
+          "tokens_in_total": { "type": "integer", "minimum": 0 },
+          "tokens_out_total": { "type": "integer", "minimum": 0 },
+          "outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          },
+          "rounds_summary": {
+            "type": "array",
             "items": {
               "type": "object",
-              "required": ["predicate", "args", "justification", "accepted"],
+              "required": [
+                "round", "accepted", "rejected", "cache_hit",
+                "tokens_in", "tokens_out"
+              ],
               "properties": {
-                "predicate": { "type": "string" },
-                "args": { "type": "array", "items": { "type": "string" } },
-                "justification": { "type": "string" },
-                "accepted": { "type": "boolean" },
-                "rejection_reason": { "type": ["string", "null"] }
+                "round": { "type": "integer", "minimum": 1 },
+                "accepted": { "type": "integer", "minimum": 0 },
+                "rejected": { "type": "integer", "minimum": 0 },
+                "cache_hit": { "type": "boolean" },
+                "tokens_in": { "type": "integer", "minimum": 0 },
+                "tokens_out": { "type": "integer", "minimum": 0 }
               }
             }
           }
+        }
+      }
+    },
+    "explain.patch": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "plan"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "plan": {
+            "type": "object",
+            "required": ["ops"],
+            "properties": {
+              "ops": { "type": "array", "items": { "type": "object" } },
+              "label": { "type": "string" }
+            }
+          },
+          "candidate_outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["plan_label", "anchors", "verdict", "evidence", "stats", "summary"],
+        "properties": {
+          "plan_label": { "type": "string" },
+          "anchors": { "type": "array", "items": { "type": "string" } },
+          "verdict": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["accepted", "rejected", "not_proven"] },
+              "commit_id": { "type": ["string", "null"] },
+              "notes": { "type": "array", "items": { "type": "string" } },
+              "reason": { "type": "string" },
+              "failing_stages": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["observed", "inferred", "rule_activation", "candidate", "stage"]
+                }
+              }
+            }
+          },
+          "stats": {
+            "type": "object",
+            "required": [
+              "anchors", "observed_cited", "inferred_cited",
+              "rule_activations", "candidates_considered", "stages_run"
+            ],
+            "properties": {
+              "anchors": { "type": "integer", "minimum": 0 },
+              "observed_cited": { "type": "integer", "minimum": 0 },
+              "inferred_cited": { "type": "integer", "minimum": 0 },
+              "rule_activations": { "type": "integer", "minimum": 0 },
+              "candidates_considered": { "type": "integer", "minimum": 0 },
+              "stages_run": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "summary": { "type": "string" }
         }
       }
     },

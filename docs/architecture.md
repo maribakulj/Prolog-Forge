@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 5 (rule stage + commit journal + rollback landed)
+## Current state — Phase 1 step 6 (explainer + refinement loop landed)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -20,10 +20,11 @@ JSON-RPC.
 | `pf-persist` | KV trait + in-memory backend. Disk-backed store lands in Phase 1 step 2. |
 | `pf-ingest` | Filesystem walker, source-file dispatch. |
 | `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
-| `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only), prompt builder, content-addressed response cache, identifier-resolution guard. |
+| `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only), prompt builder, content-addressed response cache, identifier-resolution guard, one-shot `propose` *and* iterative `refine` pipeline with per-round budget accounting. |
 | `pf-patch` | Typed patch planner: `PatchOp` (RenameFunction so far), `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
 | `pf-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. |
-| `pf-core` | Session/workspace manager, API dispatcher, CSM→fact lowering, `workspace.index`, `llm.propose`, `patch.preview`, `patch.apply` (+ `RuleStage`, disk-persistent commit journal), `patch.rollback`. |
+| `pf-explain` | Proof-carrying explainer: composes observed / inferred / candidate evidence, rule activations (head + premises via `pf_rules::trace_derivations`), and validation stage outcomes into a single `Explanation` with a synthesized verdict. Pure; no I/O. |
+| `pf-core` | Session/workspace manager, API dispatcher, CSM→fact lowering, `workspace.index`, `llm.propose`, `llm.refine`, `patch.preview`, `patch.apply` (+ `RuleStage`, disk-persistent commit journal), `patch.rollback`, `explain.patch`. |
 | `pf-daemon` | Binary: stdio JSON-RPC server wrapping the Core. |
 | `pf-cli` | Binary: reference adapter, also used in CI. |
 
@@ -61,11 +62,40 @@ client  ──►  rules.load(src)             ──►  {rules_added, facts_ad
 client  ──►  rules.evaluate              ──►  {derived, iterations}
 client  ──►  graph.query(pattern)        ──►  {count, bindings[]}
 client  ──►  llm.propose(anchor, intent) ──►  {accepted, rejected, outcomes}
+client  ──►  llm.refine(anchor, intent,
+                         prior_outcomes,
+                         prior_diagnostics,
+                         max_rounds)      ──►  {rounds, converged, outcomes, rounds_summary[]}
 client  ──►  patch.preview(plan)         ──►  {total_replacements, files[], errors[]}
 client  ──►  patch.apply(plan)           ──►  {applied, commit_id, validation, …}
 client  ──►  patch.rollback(commit_id)   ──►  {rolled_back, files_restored, …}
+client  ──►  explain.patch(plan)         ──►  {verdict, evidence[], stats, summary}
 client  ──►  session.shutdown
 ```
+
+### Neuro-symbolic loop (Phase 1 step 6)
+
+Phase 1 steps 2–4 gave the runtime a one-shot `propose → validate → apply`
+path. Step 6 closes the loop on both sides:
+
+- **`llm.refine`** turns the single prompt into a bounded iterative
+  dialogue. Each round renders a `refine.v1` prompt carrying forward
+  *every* prior rejection reason and validator diagnostic, calls the
+  provider through the same trait as `propose` (caching identical prompts
+  round-by-round), and filters the response through the same
+  identifier-resolution guard. The loop exits early when a round produces
+  zero rejections; otherwise it terminates at `max_rounds`. Outcomes are
+  tagged with the round that produced them so callers can visualize how
+  the hypothesis set tightened.
+
+- **`explain.patch`** synthesizes a proof-carrying explanation for a
+  typed plan: observed facts mentioning the plan's anchors, candidates
+  considered (with justifications and rejection reasons), rule
+  activations captured by `pf_rules::trace_derivations` (head + premises),
+  validation stages with their diagnostics, and a three-state verdict
+  (`accepted` / `rejected` / `not_proven`). The verdict is `NotProven`
+  when only the syntactic stage is available — an honest acknowledgement
+  that green syntax is not a proof of semantic safety.
 
 ### LLM orchestrator invariants
 
@@ -86,15 +116,14 @@ slot on top of this loop in the following steps.
 - TypeScript / Python analyzers.
 - Type-aware Rust analysis (cross-module resolution via rust-analyzer).
 - Network LLM providers (Anthropic, OpenAI, local llama.cpp) — the trait is ready; only the mock is wired in Phase 1.2.
-- LLM modes beyond the proposer: explainer (NL rendering of proof trees), classifier, planner, oracle.
+- LLM modes beyond proposer / refiner: classifier, planner, oracle.
+- NL rendering of proof trees (current explainer is structured JSON; the web renderer lands in Phase 2).
 - Type-aware validation stage (rust-analyzer integration, Phase 2).
 - Behavioral stage (run impacted tests).
 - Content-addressed journal (current format is plain JSON and stores full before/after bytes per file — fine at MVP scale, compressed CAS coming with the disk-backed `pf-persist`).
 - Cross-commit rollback (Phase 1.5 rollback is single-commit; a redo/undo stack arrives later).
 - Scope-aware rename (requires the type-aware Rust analyzer, Phase 2). Current rename touches every `Ident` whose string matches, which can clobber shadow-binding variables of the same name.
-- Patch planning / application.
-- Validation pipeline (syntactic, type, behavioral oracles).
-- Explainer / proof-tree renderer.
+- Patch planning / application (minimal).
 - Persistence to disk.
 - Notifications / streaming / cancellation.
 

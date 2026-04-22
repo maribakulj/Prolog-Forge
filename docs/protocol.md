@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.6.0` (Phase 1 step 5, pre-stable).
+**Version:** `0.7.0` (Phase 1 step 6, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -45,9 +45,11 @@ server-driven from that list.
 | `rules.load` | Parse a Datalog source block; registers rules and seed facts. |
 | `rules.evaluate` | Run the rule engine to fixpoint; returns `{derived, iterations}`. |
 | `llm.propose` | Ask the bounded LLM orchestrator for candidate facts anchored at an entity; every proposal is identifier-resolved against the graph before insertion at the `candidate` layer. |
+| `llm.refine` | Iterative revision loop. Accepts prior rejections and validator diagnostics, runs up to `max_rounds` of `refine.v1` prompts, and returns every candidate tagged with its round. Converges early when a round produces zero rejections. |
 | `patch.preview` | Simulate a typed patch plan against the workspace's source files. Returns a unified diff per changed file plus replacement counts. Does not touch the filesystem. |
 | `patch.apply` | Validate the plan (pluggable stage pipeline — syntactic + rule when rules are loaded) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
 | `patch.rollback` | Undo a previously applied commit by id. Preflight-checks that the on-disk content still matches what was written at commit time, then atomically restores the pre-commit bytes from the journal. |
+| `explain.patch` | Build a proof-carrying explanation for a typed plan: observed facts cited, rule activations (head + premises), candidates considered, validation stages + diagnostics, and a synthesized verdict (`accepted` / `rejected` / `not_proven`). Pure — reads the graph, does not touch the filesystem. |
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
 and are the source of truth. The Rust types in `pf-protocol` are expected to

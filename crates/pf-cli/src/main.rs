@@ -16,14 +16,16 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pf_core::{dispatch, Core};
 use pf_protocol::{
-    Id, IngestFactParams, InitializeParams, LlmProposeParams, LlmProposeResult, PatchApplyParams,
-    PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult, PatchRollbackParams,
-    PatchRollbackResult, QueryParams, QueryResult, Request, Response, RulesEvaluateParams,
-    RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities, WorkspaceId,
-    WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams, WorkspaceOpenResult,
-    METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_LLM_PROPOSE, METHOD_PATCH_APPLY,
-    METHOD_PATCH_PREVIEW, METHOD_PATCH_ROLLBACK, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD,
-    METHOD_WORKSPACE_INDEX, METHOD_WORKSPACE_OPEN,
+    EvidenceNodeDto, ExplainPatchParams, ExplainPatchResult, Id, IngestFactParams,
+    InitializeParams, LlmProposeParams, LlmProposeResult, LlmRefineParams, LlmRefineResult,
+    PatchApplyParams, PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult,
+    PatchRollbackParams, PatchRollbackResult, QueryParams, QueryResult, Request, Response,
+    RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
+    VerdictDto, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
+    WorkspaceOpenResult, METHOD_EXPLAIN_PATCH, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
+    METHOD_LLM_PROPOSE, METHOD_LLM_REFINE, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW,
+    METHOD_PATCH_ROLLBACK, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
+    METHOD_WORKSPACE_OPEN,
 };
 use serde_json::{json, Value};
 
@@ -102,6 +104,43 @@ enum Cmd {
         #[arg(long, default_value = "1")]
         hops: usize,
     },
+    /// Run the neuro-symbolic refinement loop: `propose` once, then feed
+    /// the rejection reasons back to the model up to `rounds` times until
+    /// every surviving candidate resolves cleanly against the graph.
+    Refine {
+        /// Workspace root to index.
+        root: PathBuf,
+        /// Entity id to anchor the context selection.
+        #[arg(long)]
+        anchor: String,
+        /// Natural-language intent passed to the orchestrator.
+        #[arg(long, default_value = "refine invariants after validator feedback")]
+        intent: String,
+        /// Context radius (hops around the anchor).
+        #[arg(long, default_value = "1")]
+        hops: usize,
+        /// Maximum refinement rounds (includes the initial pass). The
+        /// loop exits earlier if a round produces zero rejections.
+        #[arg(long, default_value = "3")]
+        rounds: u32,
+    },
+    /// Produce a proof-carrying explanation for a rename plan: which
+    /// observed facts are cited, which rules fire on the shadow graph,
+    /// which candidates were considered, which validation stages ran, and
+    /// what the final verdict is. The filesystem is never touched.
+    Explain {
+        /// Workspace root to index.
+        root: PathBuf,
+        /// Source identifier for a `rename_function` plan.
+        #[arg(long)]
+        from: String,
+        /// Target identifier for a `rename_function` plan.
+        #[arg(long)]
+        to: String,
+        /// Emit the full evidence stream. Default: summary + verdict only.
+        #[arg(long)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -118,6 +157,19 @@ fn main() -> Result<()> {
             intent,
             hops,
         } => cmd_propose(root, anchor, intent, hops),
+        Cmd::Refine {
+            root,
+            anchor,
+            intent,
+            hops,
+            rounds,
+        } => cmd_refine(root, anchor, intent, hops, rounds),
+        Cmd::Explain {
+            root,
+            from,
+            to,
+            verbose,
+        } => cmd_explain(root, from, to, verbose),
         Cmd::Rename {
             root,
             from,
@@ -312,6 +364,240 @@ fn cmd_propose(root: PathBuf, anchor: String, intent: String, hops: usize) -> Re
         );
     }
     Ok(())
+}
+
+fn cmd_refine(
+    root: PathBuf,
+    anchor: String,
+    intent: String,
+    hops: usize,
+    rounds: u32,
+) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let _ = call(
+        &core,
+        METHOD_WORKSPACE_INDEX,
+        serde_json::to_value(WorkspaceIndexParams {
+            workspace_id: ws.clone(),
+        })?,
+    )?;
+
+    let resp = call(
+        &core,
+        METHOD_LLM_REFINE,
+        serde_json::to_value(LlmRefineParams {
+            workspace_id: ws,
+            intent,
+            anchor_id: anchor,
+            hops,
+            max_facts: 256,
+            max_rounds: rounds,
+            prior_outcomes: Vec::new(),
+            prior_diagnostics: Vec::new(),
+        })?,
+    )?;
+    let r: LlmRefineResult = serde_json::from_value(resp)?;
+    println!(
+        "refine: {} round(s), converged={}, accepted={}, rejected={} \
+         (tokens_in={}, tokens_out={})",
+        r.rounds,
+        r.converged,
+        r.final_accepted,
+        r.final_rejected,
+        r.tokens_in_total,
+        r.tokens_out_total
+    );
+    for rs in &r.rounds_summary {
+        println!(
+            "  round {}: accepted={} rejected={} cache_hit={} tokens={}+{}",
+            rs.round, rs.accepted, rs.rejected, rs.cache_hit, rs.tokens_in, rs.tokens_out
+        );
+    }
+    for o in &r.outcomes {
+        let status = if o.accepted { "  ACCEPT" } else { "  REJECT" };
+        let round_tag = o
+            .round
+            .map(|r| format!(" r{}", r))
+            .unwrap_or_else(|| " r?".into());
+        println!(
+            "{}{} {}({}) — {}{}",
+            status,
+            round_tag,
+            o.predicate,
+            o.args.join(", "),
+            o.justification,
+            o.rejection_reason
+                .as_deref()
+                .map(|r| format!("  [why: {r}]"))
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_explain(root: PathBuf, from: String, to: String, verbose: bool) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    // Index the workspace so the graph has entity facts. The explainer
+    // reads from the graph only; it never writes to disk.
+    let _ = call(
+        &core,
+        METHOD_WORKSPACE_INDEX,
+        serde_json::to_value(WorkspaceIndexParams {
+            workspace_id: ws.clone(),
+        })?,
+    )?;
+
+    let op = serde_json::json!({
+        "op": "rename_function",
+        "old_name": from,
+        "new_name": to,
+        "files": []
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("rename {from} -> {to}"),
+    };
+
+    let resp = call(
+        &core,
+        METHOD_EXPLAIN_PATCH,
+        serde_json::to_value(ExplainPatchParams {
+            workspace_id: ws,
+            plan,
+            candidate_outcomes: Vec::new(),
+        })?,
+    )?;
+    let r: ExplainPatchResult = serde_json::from_value(resp)?;
+
+    println!("{}", r.summary);
+    match &r.verdict {
+        VerdictDto::Accepted { commit_id, notes } => {
+            println!("verdict: accepted");
+            if let Some(id) = commit_id {
+                println!("  commit: {id}");
+            }
+            for n in notes {
+                println!("  note: {n}");
+            }
+        }
+        VerdictDto::Rejected {
+            reason,
+            failing_stages,
+        } => {
+            println!("verdict: rejected ({reason})");
+            for s in failing_stages {
+                println!("  failing stage: {s}");
+            }
+        }
+        VerdictDto::NotProven { reason } => {
+            println!("verdict: not proven ({reason})");
+        }
+    }
+    println!(
+        "stats: {} anchor(s), {} observed, {} inferred, {} rule activation(s), \
+         {} candidate(s), {} stage(s)",
+        r.stats.anchors,
+        r.stats.observed_cited,
+        r.stats.inferred_cited,
+        r.stats.rule_activations,
+        r.stats.candidates_considered,
+        r.stats.stages_run
+    );
+
+    if verbose {
+        println!("evidence:");
+        for node in &r.evidence {
+            render_evidence(node);
+        }
+    }
+    Ok(())
+}
+
+fn render_evidence(n: &EvidenceNodeDto) {
+    match n {
+        EvidenceNodeDto::Observed {
+            predicate,
+            args,
+            role,
+        } => println!("  observed[{role}] {}({})", predicate, args.join(", ")),
+        EvidenceNodeDto::Inferred { predicate, args } => {
+            println!("  inferred       {}({})", predicate, args.join(", "))
+        }
+        EvidenceNodeDto::RuleActivation {
+            rule_index,
+            head,
+            premises,
+        } => {
+            println!(
+                "  rule[{rule_index}]      {}({}) :-",
+                head.predicate,
+                head.args.join(", ")
+            );
+            for p in premises {
+                println!(
+                    "                    {}({}).",
+                    p.predicate,
+                    p.args.join(", ")
+                );
+            }
+        }
+        EvidenceNodeDto::Candidate {
+            predicate,
+            args,
+            justification,
+            accepted,
+            rejection_reason,
+            round,
+        } => {
+            let status = if *accepted { "ACCEPT" } else { "REJECT" };
+            let round_tag = round
+                .map(|r| format!(" r{}", r))
+                .unwrap_or_else(|| "".into());
+            let why = rejection_reason
+                .as_deref()
+                .map(|r| format!("  [why: {r}]"))
+                .unwrap_or_default();
+            println!(
+                "  cand[{status}{round_tag}] {}({}) — {}{}",
+                predicate,
+                args.join(", "),
+                justification,
+                why
+            );
+        }
+        EvidenceNodeDto::Stage {
+            name,
+            ok,
+            diagnostics,
+        } => {
+            let status = if *ok { "PASS" } else { "FAIL" };
+            println!("  stage[{status}]    {name}");
+            for d in diagnostics {
+                match &d.file {
+                    Some(f) => println!("    {}: {} ({f})", d.severity, d.message),
+                    None => println!("    {}: {}", d.severity, d.message),
+                }
+            }
+        }
+    }
 }
 
 fn cmd_index(root: PathBuf, rules: Option<PathBuf>, query: Option<String>) -> Result<()> {

@@ -226,6 +226,7 @@ name = "pf-core"
 version = "0.0.1"
 dependencies = [
  "pf-csm",
+ "pf-explain",
  "pf-graph",
  "pf-ingest",
  "pf-lang-rust",
@@ -259,6 +260,17 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "pf-explain"
+version = "0.0.1"
+dependencies = [
+ "pf-graph",
+ "pf-protocol",
+ "pf-rules",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
