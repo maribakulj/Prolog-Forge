@@ -79,6 +79,12 @@ enum Cmd {
         /// never touched.
         #[arg(long)]
         apply: bool,
+        /// Run `cargo check` on a shadow copy of the workspace as part of
+        /// validation (validation_profile = "typed"). Requires `cargo` on
+        /// PATH. Slower than the default pipeline but upgrades the
+        /// verdict from `not_proven` to `accepted`.
+        #[arg(long)]
+        typecheck: bool,
     },
     /// Roll back a previously applied commit, restoring the workspace to
     /// its pre-commit state. Refuses if the on-disk content no longer
@@ -175,7 +181,8 @@ fn main() -> Result<()> {
             from,
             to,
             apply,
-        } => cmd_rename(root, from, to, apply),
+            typecheck,
+        } => cmd_rename(root, from, to, apply, typecheck),
         Cmd::Rollback { root, commit_id } => cmd_rollback(root, commit_id),
     }
 }
@@ -216,7 +223,7 @@ fn cmd_rollback(root: PathBuf, commit_id: String) -> Result<()> {
     }
 }
 
-fn cmd_rename(root: PathBuf, from: String, to: String, apply: bool) -> Result<()> {
+fn cmd_rename(root: PathBuf, from: String, to: String, apply: bool, typecheck: bool) -> Result<()> {
     let core = Core::new();
     let resp = call(
         &core,
@@ -274,6 +281,11 @@ fn cmd_rename(root: PathBuf, from: String, to: String, apply: bool) -> Result<()
         serde_json::to_value(PatchApplyParams {
             workspace_id: ws,
             plan,
+            validation_profile: if typecheck {
+                Some("typed".into())
+            } else {
+                None
+            },
         })?,
     )?;
     let result: PatchApplyResult = serde_json::from_value(resp)?;
@@ -483,6 +495,7 @@ fn cmd_explain(root: PathBuf, from: String, to: String, verbose: bool) -> Result
             workspace_id: ws,
             plan,
             candidate_outcomes: Vec::new(),
+            validation_profile: None,
         })?,
     )?;
     let r: ExplainPatchResult = serde_json::from_value(resp)?;

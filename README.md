@@ -11,16 +11,15 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 6** — everything from step 5 plus a bounded
-> neuro-symbolic **refinement loop** (`llm.refine`: iterative
-> `candidate → diagnostics → revised candidate` with per-round budget
-> accounting, convergence detection, and strict anti-hallucination carryover)
-> and a **proof-carrying explainer** (`explain.patch`: observed facts cited,
-> rule activations with premises, candidates considered, validation stages
-> + diagnostics, verdict ∈ `accepted` / `rejected` / `not_proven`).
-> The MVP loop — **index → rules → LLM candidates → refine →
-> explain → patch → validate → apply → journal → rollback** —
-> is now closed *and* articulated end-to-end. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 7** — everything from step 6 plus a
+> **type-aware validation stage** (`CargoCheckStage`: mirrors the
+> workspace to a temp dir, overlays the shadow files, runs
+> `cargo check --message-format=json`, and parses compiler errors into
+> structured `Diagnostic`s). Enabled via `validation_profile = "typed"`
+> on `patch.apply` and `explain.patch`, and `pf rename --typecheck` on
+> the CLI. This is what converts an `explain.patch` verdict from
+> `not_proven` to `accepted` — the runtime now *proves* patches
+> type-check rather than just parse. See [Roadmap](#roadmap).
 
 ---
 
@@ -75,6 +74,7 @@ Phase 0 implements `observed` and `inferred` end-to-end.
                                     │   └── refinement  (Phase 1.6 ✓, iterative llm.refine)
                                     ├── patch planner    (Phase 1.3 ✓)
                                     ├── validator        (Phase 1.4–5 ✓, syntactic + rule)
+                                    │   └── typed profile (Phase 1.7 ✓, cargo_check)
                                     ├── commit journal   (Phase 1.5 ✓, JSON on disk)
                                     └── explainer        (Phase 1.6 ✓, proof-carrying patches)
 ```
@@ -93,7 +93,7 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
 | [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard, one-shot `propose` + iterative `refine` loop |
 | [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate Rust rename |
-| [`pf-validate`](crates/pf-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline` |
+| [`pf-validate`](crates/pf-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline`. Semantic stages (`RuleStage`, `CargoCheckStage`) live in `pf-core`. |
 | [`pf-explain`](crates/pf-explain) | Proof-carrying explainer: composes observed / inferred / candidate evidence + rule activations + validation stages into a single `Explanation` with a synthesized verdict |
 | [`pf-core`](crates/pf-core) | Session manager + API dispatcher + indexing pipeline + `llm.propose` + `llm.refine` + `patch.preview` + `patch.apply` + `explain.patch` |
 | [`pf-daemon`](crates/pf-daemon) | Binary: stdio JSON-RPC server |
@@ -273,10 +273,14 @@ applied: commit commit-18a8a3f598a1c2e1 (1 file(s), 531 bytes)
 
 Every `patch.apply` goes through three gates:
 
-1. **Validation pipeline** (`pf-validate`). The `SyntacticStage` re-parses
-   every changed `.rs` file with `syn`; a patch that would produce
-   invalid Rust is rejected before anything reaches disk. The trait is
-   designed for composition — type-aware and rule stages slot in next.
+1. **Validation pipeline** (`pf-validate`). The default profile runs
+   `SyntacticStage` (re-parses every changed `.rs` with `syn`) and,
+   when rules are loaded, `RuleStage` (re-evaluates the rule pack on
+   the shadow graph and fails if any `violation/*` fact is derived).
+   Passing `validation_profile = "typed"` additionally runs
+   `CargoCheckStage`, which materialises the shadow files in a temp
+   directory and shells out to `cargo check`; compiler errors become
+   structured diagnostics.
 2. **Preflight check**. Before writing, the current on-disk content of
    every target is compared against the bytes the plan was rendered
    against. If anything drifted in between, the apply is aborted with an
@@ -418,7 +422,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.4** | `pf-validate` (pluggable stages), `patch.apply` with preflight + atomic write + rollback, `pf rename --apply` | **shipped (syntactic stage)** |
 | **1.5** | `RuleStage` (`violation/*` apply-gate), disk-persistent commit journal, `patch.rollback`, `pf rollback` CLI | **shipped** |
 | **1.6** | `pf-explain` + `explain.patch` (proof-carrying patches), `llm.refine` (iterative `candidate → diagnostics → revised candidate` loop), `pf explain` / `pf refine` CLI | **shipped** |
-| 1.7 (MVP rest) | Type-aware rename (rust-analyzer), behavioral validation stage, VS Code adapter minimal | 2–3 months |
+| **1.7** | `CargoCheckStage` (type-aware validation profile: shadow copy + `cargo check` + JSON-parsed diagnostics), `validation_profile = "typed"` on `patch.apply` / `explain.patch`, `pf rename --typecheck` | **shipped** |
+| 1.8 (MVP rest) | Type-aware **rename** (rust-analyzer, scope-resolved), behavioral validation stage (test impact), VS Code adapter minimal | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

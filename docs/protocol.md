@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.7.0` (Phase 1 step 6, pre-stable).
+**Version:** `0.8.0` (Phase 1 step 7, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -47,9 +47,24 @@ server-driven from that list.
 | `llm.propose` | Ask the bounded LLM orchestrator for candidate facts anchored at an entity; every proposal is identifier-resolved against the graph before insertion at the `candidate` layer. |
 | `llm.refine` | Iterative revision loop. Accepts prior rejections and validator diagnostics, runs up to `max_rounds` of `refine.v1` prompts, and returns every candidate tagged with its round. Converges early when a round produces zero rejections. |
 | `patch.preview` | Simulate a typed patch plan against the workspace's source files. Returns a unified diff per changed file plus replacement counts. Does not touch the filesystem. |
-| `patch.apply` | Validate the plan (pluggable stage pipeline — syntactic + rule when rules are loaded) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
+| `patch.apply` | Validate the plan (pluggable stage pipeline selected by `validation_profile` — see below) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
 | `patch.rollback` | Undo a previously applied commit by id. Preflight-checks that the on-disk content still matches what was written at commit time, then atomically restores the pre-commit bytes from the journal. |
 | `explain.patch` | Build a proof-carrying explanation for a typed plan: observed facts cited, rule activations (head + premises), candidates considered, validation stages + diagnostics, and a synthesized verdict (`accepted` / `rejected` / `not_proven`). Pure — reads the graph, does not touch the filesystem. |
+
+## Validation profiles
+
+`patch.apply` and `explain.patch` accept an optional `validation_profile`
+field that selects which stages run against the shadow file set. The
+profile names are part of the wire contract; unknown names are rejected
+with `invalid_params`.
+
+| Profile | Stages | When to use |
+|---|---|---|
+| `default` (or missing) | `syntactic`; `rules` when rule pack loaded | Fast default. Catches broken syntax and any `violation/*` fact derivable from the rule pack. |
+| `typed` | everything in `default` + `cargo_check` | Runs `cargo check --message-format=json` against a temp shadow of the workspace. Upgrades the explainer's verdict from `not_proven` to `accepted` when green. Requires `cargo` on `PATH`; passes with a warning diagnostic when it isn't (the stage is an oracle, not a hard gate). Slower — opt in per apply. |
+
+Future profiles (`tested`, `thorough`) will add behavioral stages once
+the test-impact graph and oracle stages land.
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
 and are the source of truth. The Rust types in `pf-protocol` are expected to

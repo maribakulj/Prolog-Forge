@@ -450,11 +450,89 @@ def main() -> int:
             scratch3_demo, ".prolog-forge/journal", f"{commit_id}.json"
         )), "rollback must delete journal entry"
 
+        # ---- validation_profile = "typed": cargo check stage on a valid
+        # rename must run and pass. This proves the typed pipeline is
+        # wired end-to-end and that the verdict upgrades from "not_proven"
+        # to "accepted".
+        scratch4_root = tempfile.mkdtemp(prefix="pf-smoke-typed-")
+        scratch4_demo = os.path.join(scratch4_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch4_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 26, "method": "workspace.open",
+            "params": {"root": scratch4_demo},
+        })
+        ws_typed = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 27, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_typed,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "add",
+                        "new_name": "sum",
+                        "files": [],
+                    }],
+                    "label": "smoke: typed apply",
+                },
+                "validation_profile": "typed",
+            },
+        })
+        typed = recv(proc)["result"]
+        assert typed["applied"] is True, typed
+        stage_names = [s["stage"] for s in typed["validation"]["stages"]]
+        assert "cargo_check" in stage_names, typed
+        cargo_stage = next(
+            s for s in typed["validation"]["stages"] if s["stage"] == "cargo_check"
+        )
+        assert cargo_stage["ok"] is True, cargo_stage
+
+        # Same scratch, fresh open: explain.patch with profile=typed on a
+        # clean plan must yield a verdict of `accepted` (cargo_check
+        # supplies the semantic evidence the syntactic stage alone could
+        # not). Use a no-op rename so the shadow stays identical to disk.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 28, "method": "workspace.open",
+            "params": {"root": scratch4_demo},
+        })
+        ws_typed_explain = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 29, "method": "workspace.index",
+            "params": {"workspace_id": ws_typed_explain},
+        })
+        recv(proc)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 30, "method": "explain.patch",
+            "params": {
+                "workspace_id": ws_typed_explain,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "does_not_exist_anywhere",
+                        "new_name": "also_does_not_exist",
+                        "files": [],
+                    }],
+                    "label": "smoke: typed explain",
+                },
+                "candidate_outcomes": [],
+                "validation_profile": "typed",
+            },
+        })
+        typed_explain = recv(proc)["result"]
+        assert typed_explain["verdict"]["kind"] == "accepted", typed_explain
+        evidence_kinds = {e["kind"] for e in typed_explain["evidence"]}
+        assert "stage" in evidence_kinds, typed_explain
+        stage_names2 = [
+            e["name"] for e in typed_explain["evidence"] if e["kind"] == "stage"
+        ]
+        assert "cargo_check" in stage_names2, typed_explain
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)
+        shutil.rmtree(scratch4_root, ignore_errors=True)
 
-        send(proc, {"jsonrpc": "2.0", "id": 25, "method": "session.shutdown"})
+        send(proc, {"jsonrpc": "2.0", "id": 31, "method": "session.shutdown"})
         recv(proc)
         proc.wait(timeout=5)
         print("daemon smoke test OK")

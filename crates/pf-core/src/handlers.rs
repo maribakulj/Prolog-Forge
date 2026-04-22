@@ -267,6 +267,7 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
     use pf_validate::{Pipeline, ValidationContext, ValidationStage};
 
     let p: PatchApplyParams = decode(params)?;
+    let profile = p.validation_profile.as_deref().unwrap_or("default");
 
     // Decode plan (shared shape with preview).
     let mut ops: Vec<pf_patch::PatchOp> = Vec::with_capacity(p.plan.ops.len());
@@ -308,10 +309,9 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
     // Build the pipeline. SyntacticStage always runs; RuleStage runs only
     // when the workspace has rules loaded — rule packs gate applies via
     // the `violation(...)` convention documented in docs/rules-dsl.md.
-    let mut stages: Vec<Box<dyn ValidationStage>> = vec![Box::new(pf_validate::SyntacticStage)];
-    if !rules.is_empty() {
-        stages.push(Box::new(crate::validate_stages::RuleStage::new(rules)));
-    }
+    // CargoCheckStage is opt-in via `validation_profile = "typed"`.
+    let stages: Vec<Box<dyn ValidationStage>> =
+        build_pipeline(profile, &root, &rules).map_err(RpcError::invalid_params)?;
     let validation = Pipeline::custom(stages).run(&ValidationContext {
         shadow_files: &shadow,
         original_files: &original,
@@ -405,6 +405,44 @@ fn handle_patch_rollback(core: &Core, params: Value) -> Result<Value, RpcError> 
         })
         .unwrap()),
     }
+}
+
+/// Compose a validation pipeline from the (named) `validation_profile`.
+///
+/// Known profiles:
+/// - `"default"` / missing: `SyntacticStage`, then `RuleStage` when the
+///   workspace has rules loaded. This is the cheap, always-on pipeline.
+/// - `"typed"`: everything in `"default"` plus `CargoCheckStage`, which
+///   materialises the shadow files in a temp directory and shells out to
+///   `cargo check`. `cargo` must be on `PATH`; the stage passes with a
+///   warning diagnostic when it isn't.
+fn build_pipeline(
+    profile: &str,
+    workspace_root: &std::path::Path,
+    rules: &[pf_rules::Rule],
+) -> Result<Vec<Box<dyn pf_validate::ValidationStage>>, String> {
+    let mut stages: Vec<Box<dyn pf_validate::ValidationStage>> =
+        vec![Box::new(pf_validate::SyntacticStage)];
+    if !rules.is_empty() {
+        stages.push(Box::new(crate::validate_stages::RuleStage::new(
+            rules.to_vec(),
+        )));
+    }
+    match profile {
+        "default" | "" => {}
+        "typed" => {
+            stages.push(Box::new(crate::validate_stages::CargoCheckStage::new(
+                workspace_root.to_path_buf(),
+                std::time::Duration::from_secs(180),
+            )));
+        }
+        other => {
+            return Err(format!(
+                "unknown validation_profile `{other}` (known: default, typed)"
+            ));
+        }
+    }
+    Ok(stages)
 }
 
 fn build_shadow(
@@ -653,17 +691,14 @@ fn handle_explain_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
             (root, map, st.rules.clone())
         })
         .map_err(RpcError::invalid_params)?;
-    let _ = root; // explainer is pure; we don't write to disk
 
     // Build shadow + run validation (same pipeline as patch.apply, but no
-    // transactional write).
+    // transactional write). `validation_profile` selects which stages run;
+    // the default omits CargoCheckStage so `explain.patch` stays cheap.
     let shadow = build_shadow(&plan, &original);
-    let mut stages: Vec<Box<dyn ValidationStage>> = vec![Box::new(pf_validate::SyntacticStage)];
-    if !rules.is_empty() {
-        stages.push(Box::new(crate::validate_stages::RuleStage::new(
-            rules.clone(),
-        )));
-    }
+    let profile = p.validation_profile.as_deref().unwrap_or("default");
+    let stages: Vec<Box<dyn ValidationStage>> =
+        build_pipeline(profile, &root, &rules).map_err(RpcError::invalid_params)?;
     let validation = Pipeline::custom(stages).run(&ValidationContext {
         shadow_files: &shadow,
         original_files: &original,

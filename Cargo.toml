@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+# Keep test fixtures out of the main build so stages like CargoCheckStage
+# can treat them as independent crates.
+exclude = ["examples"]
 members = [
     "crates/pf-protocol",
     "crates/pf-csm",

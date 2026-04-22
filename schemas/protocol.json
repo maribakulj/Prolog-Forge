@@ -219,6 +219,11 @@
               "ops": { "type": "array", "items": { "type": "object" } },
               "label": { "type": "string" }
             }
+          },
+          "validation_profile": {
+            "type": ["string", "null"],
+            "enum": ["default", "typed", null],
+            "description": "Selects the validation pipeline. `default` runs syntactic + rules; `typed` additionally runs cargo_check."
           }
         }
       },
@@ -431,6 +436,10 @@
           "candidate_outcomes": {
             "type": "array",
             "items": { "$ref": "#/$defs/ProposalOutcome" }
+          },
+          "validation_profile": {
+            "type": ["string", "null"],
+            "enum": ["default", "typed", null]
           }
         }
       },

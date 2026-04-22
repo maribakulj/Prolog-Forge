@@ -254,6 +254,11 @@ pub struct ExplainPatchParams {
     /// forwarded from a recent `llm.propose` / `llm.refine`).
     #[serde(default)]
     pub candidate_outcomes: Vec<ProposalOutcomeDto>,
+    /// Same vocabulary as `PatchApplyParams::validation_profile`. Runs
+    /// the requested pipeline against the shadow graph to populate the
+    /// explanation's stage evidence. FS is not mutated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -381,6 +386,12 @@ pub struct FilePatchError {
 pub struct PatchApplyParams {
     pub workspace_id: WorkspaceId,
     pub plan: PatchPlanDto,
+    /// Validation profile name. `"default"` (or `None`) runs the
+    /// syntactic + rule stages. `"typed"` additionally runs the
+    /// `cargo_check` stage; `cargo` must be on `PATH`. See
+    /// `docs/protocol.md#validation-profiles`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

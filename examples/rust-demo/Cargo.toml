@@ -1,0 +1,14 @@
+[package]
+name = "rust-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Tiny fixture used by Prolog Forge tests and docs."
+
+[lib]
+path = "src/lib.rs"
+
+# Standalone workspace so the outer Prolog Forge workspace does not absorb
+# this fixture during its own builds. The fixture is only ever built
+# transitively by `pf-validate`'s CargoCheckStage.
+[workspace]
