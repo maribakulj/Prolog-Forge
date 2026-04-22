@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.9.0` (Phase 1 step 9, pre-stable).
+**Version:** `0.9.1` (Phase 1 step 10, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.

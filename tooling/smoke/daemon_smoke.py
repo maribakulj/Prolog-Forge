@@ -224,13 +224,12 @@ def main() -> int:
             },
         })
         prev = recv(proc)["result"]
-        # 3 renameable occurrences in real expression positions. The two
-        # `add(...)` occurrences inside `assert_eq!(...)` macros are not
-        # renamed — syn does not descend into macro token trees, and the
-        # current rename is not scope-aware (rust-analyzer integration is
-        # Phase 2). This is deliberately a demo: the `typed` profile
-        # below catches the mismatch that the default profile does not.
-        assert prev["total_replacements"] == 3, prev
+        # Phase 1.10 — macro-aware rename now descends into `assert_eq!`
+        # token trees, so the rename count is 3 function-body occurrences
+        # plus 2 in `#[cfg(test)]` macro bodies = 5. (Scope resolution is
+        # still a future phase; shadowed locals of the same name would
+        # still be renamed. See docs/rust-rename.md when it lands.)
+        assert prev["total_replacements"] == 5, prev
         assert len(prev["files"]) == 1, prev
         diff = prev["files"][0]["diff"]
         assert "-pub fn add" in diff, diff
@@ -456,14 +455,15 @@ def main() -> int:
             scratch3_demo, ".prolog-forge/journal", f"{commit_id}.json"
         )), "rollback must delete journal entry"
 
-        # ---- validation_profile = "typed": cargo_check catches a
-        # rename the syntactic stage cannot. Renaming `add -> sum` works
-        # at the token level in function bodies, but the two `add(...)`
-        # occurrences inside `assert_eq!(...)` are macro token trees and
-        # are not rewritten. The shadow therefore has `fn sum` defined
-        # while the tests still call `add`. cargo check finds the
-        # unresolved reference and rejects the apply. This is exactly
-        # the value-add of the typed profile.
+        # ---- validation_profile = "typed": cargo_check on a complete
+        # macro-aware rename. `add -> sum` now rewrites every occurrence
+        # including the ones inside `assert_eq!` macro bodies (Phase 1.10
+        # landed the macro walk), so the shadow type-checks and the
+        # apply should succeed. Before Phase 1.10 this same plan would
+        # have been rejected — cargo_check finds unresolved `add` in the
+        # test module — and that demo is now out of date. The Phase 1.10
+        # demo is covered by the `skips_macro_rules_meta_variable_bodies`
+        # unit test in pf-patch.
         scratch4_root = tempfile.mkdtemp(prefix="pf-smoke-typed-")
         scratch4_demo = os.path.join(scratch4_root, "demo")
         shutil.copytree("examples/rust-demo", scratch4_demo)
@@ -483,33 +483,32 @@ def main() -> int:
                         "new_name": "sum",
                         "files": [],
                     }],
-                    "label": "smoke: typed apply (expected to fail)",
+                    "label": "smoke: typed apply (add -> sum)",
                 },
                 "validation_profile": "typed",
             },
         })
         typed = recv(proc)["result"]
-        assert typed["applied"] is False, typed
+        assert typed["applied"] is True, typed
         stage_names = [s["stage"] for s in typed["validation"]["stages"]]
         assert "cargo_check" in stage_names, typed
         cargo_stage = next(
             s for s in typed["validation"]["stages"] if s["stage"] == "cargo_check"
         )
-        assert cargo_stage["ok"] is False, cargo_stage
-        assert any(
-            "add" in d["message"].lower() or "function" in d["message"].lower()
-            or "not found" in d["message"].lower() or "cannot find" in d["message"].lower()
-            or "E0425" in d["message"]
-            for d in cargo_stage["diagnostics"]
-        ), cargo_stage
-        # FS must be untouched.
+        assert cargo_stage["ok"] is True, cargo_stage
+        # The on-disk file must now have `pub fn sum` and every
+        # previously-add reference rewritten — including inside
+        # `assert_eq!(...)` test-module macro bodies. Proves Phase 1.10's
+        # macro-aware rename landed.
         with open(os.path.join(scratch4_demo, "src/lib.rs")) as f:
-            assert "pub fn add(" in f.read(), "typed reject must not touch disk"
+            final = f.read()
+        assert "pub fn sum(" in final, final
+        assert "pub fn add(" not in final, final
+        assert "assert_eq!(sum(1, 2), 3);" in final, final
+        assert "assert_eq!(sum(2, 1), 3);" in final, final
 
-        # Same scratch, fresh open: rename a function with no macro-body
-        # references (`useless`, zero callers) under profile=typed.
-        # Expect apply + cargo_check green. This upgrades the verdict
-        # from `not_proven` to `accepted`.
+        # Second typed apply on the same demo, different target, to prove
+        # the pipeline is reusable after a successful apply.
         send(proc, {
             "jsonrpc": "2.0", "id": 28, "method": "workspace.open",
             "params": {"root": scratch4_demo},
@@ -526,7 +525,7 @@ def main() -> int:
                         "new_name": "blank",
                         "files": [],
                     }],
-                    "label": "smoke: typed apply (expected to pass)",
+                    "label": "smoke: typed apply (useless -> blank)",
                 },
                 "validation_profile": "typed",
             },

@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 9 (`llm.propose_patch`: LLM speaks the op vocabulary)
+## Current state — Phase 1 step 10 (macro-aware rename: Step 1 of type-aware)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -124,7 +124,7 @@ slot on top of this loop in the following steps.
 - Behavioral stage (run impacted tests).
 - Content-addressed journal (current format is plain JSON and stores full before/after bytes per file — fine at MVP scale, compressed CAS coming with the disk-backed `pf-persist`).
 - Cross-commit rollback (Phase 1.5 rollback is single-commit; a redo/undo stack arrives later).
-- Scope-aware rename (requires the type-aware Rust analyzer, Phase 2). Current rename touches every `Ident` whose string matches, which can clobber shadow-binding variables of the same name.
+- Scope-aware rename (requires rust-analyzer, Phase 2 — Step 2 of the three-step ladder in `crates/pf-patch/src/rust_rename.rs`). The current Phase 1.10 rename is macro-aware (descends into `assert_eq!` / `vec!` / … bodies, skips `macro_rules!` meta-var grammar) but still not scope-resolved: a shadow-binding local of the same name would still be renamed.
 - Patch planning / application (minimal).
 - Persistence to disk.
 - Notifications / streaming / cancellation.
