@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.13.1` (Phase 1 step 16, pre-stable).
+**Version:** `0.13.2` (Phase 1 step 17, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -66,7 +66,7 @@ with `invalid_params`.
 |---|---|---|
 | `default` (or missing) | `syntactic`; `rules` when rule pack loaded | Fast default. Catches broken syntax and any `violation/*` fact derivable from the rule pack. |
 | `typed` | everything in `default` + `cargo_check` | Runs `cargo check --message-format=json` against a temp shadow of the workspace. Upgrades the explainer's verdict from `not_proven` to `accepted` when green. Requires `cargo` on `PATH`; passes with a warning diagnostic when it isn't (the stage is an oracle, not a hard gate). Slower — opt in per apply. |
-| `tested` | everything in `typed` + `cargo_test` | Additionally runs `cargo test --no-fail-fast` against the shadow and parses the runner's stable `test X ... FAILED` lines into one diagnostic per failing test. Strongest behavioral gate; substantially slower (full test compilation + run). Feeds structured failure names into `llm.refine` as prior diagnostics. Phase 1.16: when the plan has anchors, `pf-core` computes a direct-impact test selection (tests whose bodies — including macro token trees — mention any anchor) and passes it to `cargo test` as a substring filter, so only relevant tests run. Empty selection falls back to the full suite. |
+| `tested` | everything in `typed` + `cargo_test` | Additionally runs `cargo test --no-fail-fast` against the shadow and parses the runner's stable `test X ... FAILED` lines into one diagnostic per failing test. Strongest behavioral gate; substantially slower (full test compilation + run). Feeds structured failure names into `llm.refine` as prior diagnostics. Phase 1.16 added a direct-impact test selection (tests whose bodies — including macro token trees — mention any anchor); Phase 1.17 extends it to the full *transitive* closure (BFS over per-function ident sets, so `test_X → helper Y → anchor Z` is picked up too). The narrowed selection becomes a `cargo test <name1> <name2>` substring filter; empty selection falls back to the full suite. |
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
 and are the source of truth. The Rust types in `pf-protocol` are expected to

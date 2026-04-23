@@ -11,19 +11,18 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 16** — impacted-tests selection. The
-> `tested` validation profile no longer re-runs the whole test
-> suite on every apply: `pf-core::test_impact` parses the
-> workspace with `syn` (descending into macro token trees, same
-> walker as the Phase 1.10 rename), finds every `#[test]` /
-> `#[tokio::test]` function, and returns the ones whose body
-> mentions any of the plan's anchors. That narrowed list is
-> passed to `CargoTestStage` which invokes `cargo test <name1>
-> <name2> …` instead of the full suite. Empty selection ("no
-> anchor match") falls back to the full run — we err on
-> over-running rather than skipping coverage. This is the first
-> runtime decision the graph drives *during* a request, not
-> just in the explainer view. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 17** — transitive test-impact selection.
+> Phase 1.16 narrowed `cargo test` to tests that *directly* mention
+> an anchor. 1.17 does the full closure: `pf-core::test_impact`
+> now builds a per-function ident catalog across the whole
+> workspace and walks it with a cycle-safe BFS so `test_X → helper
+> Y → anchor Z` gets picked up too. The canonical demo: our
+> fixture's `double_uses_add` test never writes `add` directly —
+> it calls `double(5)`, and `double` is what calls `add`. Direct
+> impact missed it; transitive impact selects it. Cargo still
+> receives the same `<name1> <name2>` substring-filter shape, so
+> no protocol change; the upgrade is a pure narrowing win. See
+> [Roadmap](#roadmap).
 
 ---
 
@@ -477,8 +476,9 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.13** | Persistent rust-analyzer session pool: `pf-ra-client::Session` (tempdir + versioned `didChange` sync), `pf-core::RaSessionPool` keyed by workspace root, `pf-patch::TypedRenameResolver` trait + `OneShotResolver` fallback. Successive typed renames share one warm RA instead of paying the indexing cost each call. | **shipped** |
 | **1.14** | Repo memory surface: `memory.history` / `memory.get` / `memory.stats` methods, enriched `CommitEntry` (op tags, validation profile, replacement count), `pf history` / `pf show` / `pf stats` CLI. | **shipped** |
 | **1.15** | Memory-biased LLM proposer: `llm.propose_patch` `include_memory: N` field, `patch_propose.v2` prompt variant with `Prior successes:` block, `MemoryHint` plumbing through pf-core to the orchestrator, `pf propose-patch --include-memory N` CLI. | **shipped** |
-| **1.16** | Impacted-tests selection: `pf-core::test_impact` scans the workspace with `syn` + macro-aware walker, returns `#[test]`-annotated fns whose body mentions any plan anchor. `CargoTestStage.with_selection(names)` feeds them to `cargo test` as a substring filter; empty selection falls back to full suite. First graph-driven runtime decision. | **shipped** |
-| 1.17 (MVP rest) | VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python), transitive test impact via call graph | 2–3 months |
+| **1.16** | Impacted-tests selection (direct): `pf-core::test_impact` scans the workspace with `syn` + macro-aware walker, returns `#[test]`-annotated fns whose body mentions any plan anchor. `CargoTestStage.with_selection(names)` feeds them to `cargo test` as a substring filter; empty selection falls back to full suite. First graph-driven runtime decision. | **shipped** |
+| **1.17** | Transitive test-impact: same module now builds a per-function ident catalog and walks it with a cycle-safe BFS, so `test_X → helper Y → anchor Z` is picked up (the `double_uses_add → double → add` case direct impact missed). Same wire shape; pure narrowing upgrade. | **shipped** |
+| 1.18 (MVP rest) | VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python) | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |
