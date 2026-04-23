@@ -13,6 +13,7 @@ pub mod memory;
 pub mod ra_pool;
 pub mod rollback;
 pub mod session;
+pub mod test_impact;
 pub mod validate_stages;
 
 pub use session::Core;

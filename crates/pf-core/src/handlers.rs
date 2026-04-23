@@ -325,9 +325,17 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
     // Build the pipeline. SyntacticStage always runs; RuleStage runs only
     // when the workspace has rules loaded — rule packs gate applies via
     // the `violation(...)` convention documented in docs/rules-dsl.md.
-    // CargoCheckStage is opt-in via `validation_profile = "typed"`.
+    // CargoCheckStage is opt-in via `validation_profile = "typed"`;
+    // CargoTestStage via `= "tested"` and narrows its run via the
+    // Phase 1.16 impacted-tests selector when anchors are available.
+    let anchors = anchors_from_ops(&plan.ops);
+    let impacted_tests = if profile == "tested" {
+        crate::test_impact::impacted_test_names(&original, &anchors)
+    } else {
+        Vec::new()
+    };
     let stages: Vec<Box<dyn ValidationStage>> =
-        build_pipeline(profile, &root, &rules).map_err(RpcError::invalid_params)?;
+        build_pipeline(profile, &root, &rules, impacted_tests).map_err(RpcError::invalid_params)?;
     let validation = Pipeline::custom(stages).run(&ValidationContext {
         shadow_files: &shadow,
         original_files: &original,
@@ -451,6 +459,7 @@ fn build_pipeline(
     profile: &str,
     workspace_root: &std::path::Path,
     rules: &[pf_rules::Rule],
+    impacted_tests: Vec<String>,
 ) -> Result<Vec<Box<dyn pf_validate::ValidationStage>>, String> {
     let mut stages: Vec<Box<dyn pf_validate::ValidationStage>> =
         vec![Box::new(pf_validate::SyntacticStage)];
@@ -472,10 +481,17 @@ fn build_pipeline(
                 workspace_root.to_path_buf(),
                 std::time::Duration::from_secs(180),
             )));
-            stages.push(Box::new(crate::validate_stages::CargoTestStage::new(
-                workspace_root.to_path_buf(),
-                std::time::Duration::from_secs(300),
-            )));
+            // Phase 1.16: if the caller pre-computed a non-empty
+            // impacted-test list from the plan's anchors, pass it to
+            // `cargo test` as a substring filter. Empty list means
+            // "run all" — safer default than guessing.
+            stages.push(Box::new(
+                crate::validate_stages::CargoTestStage::new(
+                    workspace_root.to_path_buf(),
+                    std::time::Duration::from_secs(300),
+                )
+                .with_selection(impacted_tests),
+            ));
         }
         other => {
             return Err(format!(
@@ -796,8 +812,13 @@ fn handle_explain_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
     let session_key = root.display().to_string();
     let shadow = build_shadow(core, &session_key, &plan, &original);
     let profile = p.validation_profile.as_deref().unwrap_or("default");
+    let impacted_tests = if profile == "tested" {
+        crate::test_impact::impacted_test_names(&original, &anchors)
+    } else {
+        Vec::new()
+    };
     let stages: Vec<Box<dyn ValidationStage>> =
-        build_pipeline(profile, &root, &rules).map_err(RpcError::invalid_params)?;
+        build_pipeline(profile, &root, &rules, impacted_tests).map_err(RpcError::invalid_params)?;
     let validation = Pipeline::custom(stages).run(&ValidationContext {
         shadow_files: &shadow,
         original_files: &original,

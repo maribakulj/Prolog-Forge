@@ -24,3 +24,5 @@ pf-explain.workspace = true
 pf-ra-client.workspace = true
 tempfile = "3"
 walkdir = "2"
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

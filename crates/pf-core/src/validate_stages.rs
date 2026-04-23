@@ -501,6 +501,14 @@ pub struct CargoTestStage {
     /// (once for the type-checker, once for the runner) the first time,
     /// so budgets need to be larger than for `CargoCheckStage`.
     timeout: Duration,
+    /// Impacted test selection (Phase 1.16). `None` runs every test
+    /// in the workspace — the safe, slow default. `Some(names)`
+    /// invokes `cargo test name1 name2 …` so only tests whose full
+    /// path contains any of the supplied substrings run. Empty
+    /// `Some(vec![])` is treated the same as `None`; the stage never
+    /// runs *zero* tests (better to re-run a suite than to silently
+    /// skip coverage).
+    test_selection: Option<Vec<String>>,
 }
 
 impl CargoTestStage {
@@ -508,7 +516,16 @@ impl CargoTestStage {
         Self {
             workspace_root,
             timeout,
+            test_selection: None,
         }
+    }
+
+    /// Build a stage that restricts `cargo test` to the given
+    /// substring-matched names. An empty vec is treated as "no
+    /// selection" — the stage falls back to the full suite.
+    pub fn with_selection(mut self, names: Vec<String>) -> Self {
+        self.test_selection = if names.is_empty() { None } else { Some(names) };
+        self
     }
 }
 
@@ -555,17 +572,20 @@ impl ValidationStage for CargoTestStage {
         // `--no-fail-fast` so we get every failing test, not just the
         // first. `--quiet` keeps the runner output compact. Pass a
         // deterministic test thread count so CI behavior is stable.
+        // When `test_selection` is set we insert the substring filter
+        // names *before* the `--` separator so cargo treats them as
+        // filters on the set of test binaries / items it runs.
         let mut cmd = std::process::Command::new("cargo");
-        cmd.args([
-            "test",
-            "--quiet",
-            "--no-fail-fast",
-            "--",
-            "--test-threads=1",
-        ])
-        .current_dir(&shadow_root)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        cmd.arg("test").arg("--quiet").arg("--no-fail-fast");
+        if let Some(names) = &self.test_selection {
+            for n in names {
+                cmd.arg(n);
+            }
+        }
+        cmd.arg("--").arg("--test-threads=1");
+        cmd.current_dir(&shadow_root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         let child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -748,6 +768,49 @@ mod tests {
                 .any(|d| d.message.contains("add_is_correct") || d.message.contains("failed")),
             "expected a diagnostic naming the failing test or failure: {:?}",
             r.diagnostics
+        );
+    }
+
+    /// Phase 1.16: passing a narrowed `test_selection` must cause
+    /// `cargo test` to actually skip non-matching tests. The fixture
+    /// has one passing test and one *broken* test — selecting only
+    /// the passing one must turn the stage green, while running both
+    /// (empty selection) reports the failure.
+    #[test]
+    fn impacted_selection_skips_unrelated_tests() {
+        const TWO_TESTS: &str = r#"
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+pub fn sub(a: i32, b: i32) -> i32 { a - b }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn adds() { assert_eq!(add(1, 2), 3); }
+    #[test]
+    fn subs_broken() { assert_eq!(sub(5, 3), 99); }  // deliberately wrong
+}
+"#;
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), TWO_TESTS);
+        let mut shadow: BTreeMap<String, String> = BTreeMap::new();
+        shadow.insert("src/lib.rs".into(), TWO_TESTS.into());
+        let ctx = ValidationContext {
+            shadow_files: &shadow,
+            original_files: &shadow,
+        };
+        // Full suite → the broken test fails the stage.
+        let all =
+            CargoTestStage::new(tmp.path().to_path_buf(), Duration::from_secs(180)).validate(&ctx);
+        assert!(!all.ok, "full suite must see the broken test: {:?}", all);
+        // Narrow to `adds` only → passes.
+        let narrowed = CargoTestStage::new(tmp.path().to_path_buf(), Duration::from_secs(180))
+            .with_selection(vec!["adds".into()])
+            .validate(&ctx);
+        assert!(
+            narrowed.ok,
+            "selection must skip the unrelated broken test: {:?}",
+            narrowed
         );
     }
 }

@@ -11,19 +11,19 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 15** — memory-biased LLM proposer. The
-> memory surface from 1.14 becomes *exploitable*, not just
-> queryable: `llm.propose_patch` gains an optional
-> `include_memory: N` field that pulls the top-N recent commits
-> from `memory.history` and feeds them into a `Prior successes:`
-> prompt block (`patch_propose.v2` schema, separate cache bucket
-> from pure runs). The MockProvider reacts to the block by
-> surfacing extra candidates biased toward op kinds that have
-> historically landed here — a concrete demonstration of the
-> channel end-to-end. `pf propose-patch --include-memory N` wires
-> it on the CLI. Closes the gap between "the runtime remembers"
-> and "the runtime uses what it remembers". See
-> [Roadmap](#roadmap).
+> Status: **Phase 1, step 16** — impacted-tests selection. The
+> `tested` validation profile no longer re-runs the whole test
+> suite on every apply: `pf-core::test_impact` parses the
+> workspace with `syn` (descending into macro token trees, same
+> walker as the Phase 1.10 rename), finds every `#[test]` /
+> `#[tokio::test]` function, and returns the ones whose body
+> mentions any of the plan's anchors. That narrowed list is
+> passed to `CargoTestStage` which invokes `cargo test <name1>
+> <name2> …` instead of the full suite. Empty selection ("no
+> anchor match") falls back to the full run — we err on
+> over-running rather than skipping coverage. This is the first
+> runtime decision the graph drives *during* a request, not
+> just in the explainer view. See [Roadmap](#roadmap).
 
 ---
 
@@ -477,7 +477,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.13** | Persistent rust-analyzer session pool: `pf-ra-client::Session` (tempdir + versioned `didChange` sync), `pf-core::RaSessionPool` keyed by workspace root, `pf-patch::TypedRenameResolver` trait + `OneShotResolver` fallback. Successive typed renames share one warm RA instead of paying the indexing cost each call. | **shipped** |
 | **1.14** | Repo memory surface: `memory.history` / `memory.get` / `memory.stats` methods, enriched `CommitEntry` (op tags, validation profile, replacement count), `pf history` / `pf show` / `pf stats` CLI. | **shipped** |
 | **1.15** | Memory-biased LLM proposer: `llm.propose_patch` `include_memory: N` field, `patch_propose.v2` prompt variant with `Prior successes:` block, `MemoryHint` plumbing through pf-core to the orchestrator, `pf propose-patch --include-memory N` CLI. | **shipped** |
-| 1.16 (MVP rest) | Impacted-tests selection, VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python) | 2–3 months |
+| **1.16** | Impacted-tests selection: `pf-core::test_impact` scans the workspace with `syn` + macro-aware walker, returns `#[test]`-annotated fns whose body mentions any plan anchor. `CargoTestStage.with_selection(names)` feeds them to `cargo test` as a substring filter; empty selection falls back to full suite. First graph-driven runtime decision. | **shipped** |
+| 1.17 (MVP rest) | VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python), transitive test impact via call graph | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |
