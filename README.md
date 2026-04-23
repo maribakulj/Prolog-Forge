@@ -11,21 +11,22 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 13** — persistent rust-analyzer session
-> pool. The typed-rename path no longer spawns a fresh
-> `rust-analyzer` per request: the Core owns an `RaSessionPool`
-> keyed by workspace root, each session holds a long-lived RA child
-> + a tempdir mirror + per-file version tracking, and successive
-> typed renames sync only the files that actually changed via
-> `textDocument/didChange`. The `cargo metadata` + initial index
-> cost is paid once per workspace lifetime instead of once per
-> call — crucial for `patch.preview` + `patch.apply` sequences on
-> the same op, and for interactive workflows where many typed
-> renames happen in short succession. `pf-patch` exposes a new
-> `TypedRenameResolver` trait so the planner stays oblivious to
-> one-shot vs pooled behaviour; the default `OneShotResolver` keeps
-> working as a fallback when no pool is available. See
-> [Roadmap](#roadmap).
+> Status: **Phase 1, step 14** — repo memory surface. The commit
+> journal is now queryable from the outside: `memory.history` lists
+> every applied patch newest-first with op tags, validation
+> profile, replacement count and files-changed count; `memory.get`
+> fetches a single commit's full before/after bytes;
+> `memory.stats` aggregates by op kind, by profile, and by
+> most-edited files. The journal itself grew three
+> backwards-compatible fields (`ops_summary`, `validation_profile`,
+> `total_replacements`) so the stats don't need to re-parse labels
+> or re-walk plans. `pf history` / `pf show` / `pf stats` CLI
+> subcommands chain it. This addresses the "il manque une mémoire
+> exploitable" critique point: the runtime now remembers what it
+> did on a repo, and its callers can ask. Learning from that
+> memory (promoting repeated candidates to `validated` facts,
+> conditioning LLM prompts on past successes) is a Phase 3 item;
+> the surface lands first. See [Roadmap](#roadmap).
 
 ---
 
@@ -477,7 +478,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.11** | Scope-resolved rename (Step 2 of type-aware): new `pf-ra-client` crate (LSP client + in-process mock), new `PatchOp::RenameFunctionTyped` variant, `pf rename --scope-resolved` CLI flag. Graceful degradation when rust-analyzer isn't on `PATH`. | **shipped** |
 | **1.12** | First non-rename op: `PatchOp::AddDeriveToStruct`. Syn-based merge-or-insert of `#[derive(...)]` on struct/enum/union, idempotent, grounded by `struct_def`/`enum_def`/`union_def`/`type_def` facts. MockProvider emits `add_derive` candidates; `llm.propose_patch` validator recognises the op. `pf add-derive` CLI. | **shipped** |
 | **1.13** | Persistent rust-analyzer session pool: `pf-ra-client::Session` (tempdir + versioned `didChange` sync), `pf-core::RaSessionPool` keyed by workspace root, `pf-patch::TypedRenameResolver` trait + `OneShotResolver` fallback. Successive typed renames share one warm RA instead of paying the indexing cost each call. | **shipped** |
-| 1.14 (MVP rest) | Impacted-tests selection, VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), repo memory surface | 2–3 months |
+| **1.14** | Repo memory surface: `memory.history` / `memory.get` / `memory.stats` methods, enriched `CommitEntry` (op tags, validation profile, replacement count), `pf history` / `pf show` / `pf stats` CLI. | **shipped** |
+| 1.15 (MVP rest) | Impacted-tests selection, VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), memory-driven LLM prompting | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

@@ -30,6 +30,23 @@ pub struct CommitEntry {
     pub timestamp_unix: u64,
     pub label: String,
     pub files: Vec<CommitFile>,
+    /// Op tags (`rename_function`, `rename_function_typed`,
+    /// `add_derive_to_struct`, …) in the plan that produced this
+    /// commit. Lets `memory.stats` aggregate by op kind without
+    /// re-parsing the `label`. Added in Phase 1.14 — defaults to an
+    /// empty vec for journal entries written before this field
+    /// existed.
+    #[serde(default)]
+    pub ops_summary: Vec<String>,
+    /// Validation profile the apply ran through (`default`, `typed`,
+    /// `tested`). `None` on pre-1.14 entries; `Some("default")` on
+    /// new entries when the caller didn't override.
+    #[serde(default)]
+    pub validation_profile: Option<String>,
+    /// Total replacements the preview reported for this commit. Used
+    /// by `memory.stats` to track patch size distribution.
+    #[serde(default)]
+    pub total_replacements: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +119,61 @@ pub fn new_entry(commit_id: String, label: String, files: Vec<CommitFile>) -> Co
         timestamp_unix,
         label,
         files,
+        ops_summary: Vec::new(),
+        validation_profile: None,
+        total_replacements: 0,
     }
+}
+
+/// Richer constructor that records the op tags, validation profile and
+/// replacement count at commit time. The plain [`new_entry`] keeps
+/// working for callers that don't have that context yet (notably the
+/// `journal::tests::round_trip` unit test).
+pub fn new_entry_with_stats(
+    commit_id: String,
+    label: String,
+    files: Vec<CommitFile>,
+    ops_summary: Vec<String>,
+    validation_profile: Option<String>,
+    total_replacements: usize,
+) -> CommitEntry {
+    let mut entry = new_entry(commit_id, label, files);
+    entry.ops_summary = ops_summary;
+    entry.validation_profile = validation_profile;
+    entry.total_replacements = total_replacements;
+    entry
+}
+
+/// Scan the workspace's journal directory and return every commit's
+/// metadata (no file bodies) sorted by timestamp ascending. Missing
+/// directory is a legitimate empty-history response, not an error.
+pub fn list(root: &Path) -> Result<Vec<CommitEntry>, JournalError> {
+    let dir = journal_dir(root);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<CommitEntry> = Vec::new();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let parsed: CommitEntry = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if parsed.schema != SCHEMA_VERSION {
+            continue;
+        }
+        out.push(parsed);
+    }
+    out.sort_by_key(|e| e.timestamp_unix);
+    Ok(out)
 }
 
 #[cfg(test)]

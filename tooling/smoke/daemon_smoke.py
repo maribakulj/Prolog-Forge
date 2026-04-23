@@ -868,6 +868,112 @@ def main() -> int:
             assert "pub fn add(" in f.read(), "pool preview must not touch disk"
         shutil.rmtree(scratch9_root, ignore_errors=True)
 
+        # ---- Phase 1.14: memory surface (history / get / stats).
+        # Apply two patches of different op kinds, then assert that
+        # memory.history sees both, memory.stats groups them by op
+        # kind and by profile, and memory.get round-trips a single
+        # entry's full body.
+        scratch10_root = tempfile.mkdtemp(prefix="pf-smoke-memory-")
+        scratch10_demo = os.path.join(scratch10_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch10_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 80, "method": "workspace.open",
+            "params": {"root": scratch10_demo},
+        })
+        ws_mem = recv(proc)["result"]["workspace_id"]
+        # Apply #1: add_derive_to_struct on Counter.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 81, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_mem,
+                "plan": {
+                    "ops": [{
+                        "op": "add_derive_to_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug", "Clone"],
+                        "files": [],
+                    }],
+                    "label": "smoke: memory add_derive",
+                },
+            },
+        })
+        mem_apply1 = recv(proc)["result"]
+        assert mem_apply1["applied"] is True, mem_apply1
+        first_commit = mem_apply1["commit_id"]
+        # Apply #2: rename_function of `useless`.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 82, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_mem,
+                "plan": {
+                    "ops": [{
+                        "op": "rename_function",
+                        "old_name": "useless",
+                        "new_name": "unused",
+                        "files": [],
+                    }],
+                    "label": "smoke: memory rename",
+                },
+                "validation_profile": "default",
+            },
+        })
+        mem_apply2 = recv(proc)["result"]
+        assert mem_apply2["applied"] is True, mem_apply2
+
+        # memory.history: two entries, newest first, with op tags.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 83, "method": "memory.history",
+            "params": {"workspace_id": ws_mem},
+        })
+        hist = recv(proc)["result"]
+        assert len(hist["items"]) == 2, hist
+        tags = {
+            t
+            for it in hist["items"]
+            for t in it["ops_summary"]
+        }
+        assert "rename_function" in tags, hist
+        assert "add_derive_to_struct" in tags, hist
+        # Filter by op tag: only add_derive.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 84, "method": "memory.history",
+            "params": {
+                "workspace_id": ws_mem,
+                "op_tag": "add_derive_to_struct",
+            },
+        })
+        hist_filtered = recv(proc)["result"]
+        assert len(hist_filtered["items"]) == 1, hist_filtered
+        assert hist_filtered["items"][0]["commit_id"] == first_commit, hist_filtered
+
+        # memory.get: full round-trip of the first commit.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 85, "method": "memory.get",
+            "params": {"workspace_id": ws_mem, "commit_id": first_commit},
+        })
+        got = recv(proc)["result"]
+        assert got["commit_id"] == first_commit, got
+        assert got["ops_summary"] == ["add_derive_to_struct"], got
+        assert got["files"], got
+        assert got["files"][0]["path"] == "src/lib.rs", got
+
+        # memory.stats: two commits, both profiles default, rename +
+        # add_derive each count 1, src/lib.rs touched twice.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 86, "method": "memory.stats",
+            "params": {"workspace_id": ws_mem},
+        })
+        stats = recv(proc)["result"]
+        assert stats["commits"] == 2, stats
+        assert stats["by_op_kind"].get("rename_function") == 1, stats
+        assert stats["by_op_kind"].get("add_derive_to_struct") == 1, stats
+        assert stats["by_validation_profile"].get("default") == 2, stats
+        assert any(
+            tf["path"] == "src/lib.rs" and tf["commit_count"] == 2
+            for tf in stats["top_files"]
+        ), stats
+        shutil.rmtree(scratch10_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

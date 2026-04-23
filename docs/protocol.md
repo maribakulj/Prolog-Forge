@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.11.1` (Phase 1 step 13, pre-stable).
+**Version:** `0.12.0` (Phase 1 step 14, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -51,6 +51,9 @@ server-driven from that list.
 | `patch.apply` | Validate the plan (pluggable stage pipeline selected by `validation_profile` — see below) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
 | `patch.rollback` | Undo a previously applied commit by id. Preflight-checks that the on-disk content still matches what was written at commit time, then atomically restores the pre-commit bytes from the journal. |
 | `explain.patch` | Build a proof-carrying explanation for a typed plan: observed facts cited, rule activations (head + premises), candidates considered, validation stages + diagnostics, and a synthesized verdict (`accepted` / `rejected` / `not_proven`). Pure — reads the graph, does not touch the filesystem. |
+| `memory.history` | Queryable view of the runtime's commit journal. Returns per-commit metadata (id, timestamp, label, op tags, profile, replacement count, files-changed count) newest-first. Filters: `label_prefix`, `op_tag`, `validation_profile`, `limit`. |
+| `memory.get` | Fetch one commit's full journal entry — metadata plus before/after bytes of every file the commit touched. |
+| `memory.stats` | Aggregate over the whole journal: commit count, count by op kind, count by validation profile, top-N most-edited files, first/last commit timestamps, total bytes written. |
 
 ## Validation profiles
 

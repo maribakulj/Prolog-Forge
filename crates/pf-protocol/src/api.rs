@@ -506,3 +506,99 @@ pub struct RulesEvaluateResult {
     pub derived: usize,
     pub iterations: usize,
 }
+
+// ---------- memory --------------------------------------------------------
+//
+// Queryable view of the runtime's commit journal. Turns the pile of
+// `<root>/.prolog-forge/journal/*.json` entries into a first-class
+// surface: `memory.history` (log-style list with metadata), `memory.get`
+// (full entry including before/after bytes), `memory.stats` (aggregates:
+// by op kind, by validation profile, top-N edited files). Addresses the
+// "il manque une mémoire exploitable" critique from the original
+// neuro-symbolic review.
+
+pub const METHOD_MEMORY_HISTORY: &str = "memory.history";
+pub const METHOD_MEMORY_GET: &str = "memory.get";
+pub const METHOD_MEMORY_STATS: &str = "memory.stats";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryParams {
+    pub workspace_id: WorkspaceId,
+    /// Return only entries whose label starts with this prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_prefix: Option<String>,
+    /// Return only entries whose `ops_summary` contains this tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_tag: Option<String>,
+    /// Return only entries with this validation profile (`default`,
+    /// `typed`, `tested`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_profile: Option<String>,
+    /// Cap the response size. `None` means all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryResult {
+    pub items: Vec<MemoryHistoryItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryItemDto {
+    pub commit_id: String,
+    pub timestamp_unix: u64,
+    pub label: String,
+    pub files_changed: usize,
+    pub bytes_after: u64,
+    pub ops_summary: Vec<String>,
+    pub validation_profile: Option<String>,
+    pub total_replacements: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryGetParams {
+    pub workspace_id: WorkspaceId,
+    pub commit_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryGetResult {
+    pub commit_id: String,
+    pub timestamp_unix: u64,
+    pub label: String,
+    pub ops_summary: Vec<String>,
+    pub validation_profile: Option<String>,
+    pub total_replacements: usize,
+    pub files: Vec<CommitFileDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitFileDto {
+    pub path: String,
+    pub before: String,
+    pub after: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStatsParams {
+    pub workspace_id: WorkspaceId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryStatsResult {
+    pub commits: usize,
+    pub files_touched: usize,
+    pub by_op_kind: std::collections::BTreeMap<String, usize>,
+    pub by_validation_profile: std::collections::BTreeMap<String, usize>,
+    pub top_files: Vec<MemoryTopFileDto>,
+    pub first_commit_at: Option<u64>,
+    pub last_commit_at: Option<u64>,
+    pub total_bytes_written: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryTopFileDto {
+    pub path: String,
+    pub commit_count: usize,
+}

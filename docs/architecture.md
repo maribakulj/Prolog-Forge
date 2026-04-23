@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 13 (persistent rust-analyzer session pool)
+## Current state — Phase 1 step 14 (repo memory surface)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -72,6 +72,9 @@ client  ──►  llm.propose_patch(anchor,
 client  ──►  patch.preview(plan)         ──►  {total_replacements, files[], errors[]}
 client  ──►  patch.apply(plan)           ──►  {applied, commit_id, validation, …}
 client  ──►  patch.rollback(commit_id)   ──►  {rolled_back, files_restored, …}
+client  ──►  memory.history(filter)      ──►  {items[{commit_id, ts, op_tags, profile, …}]}
+client  ──►  memory.get(commit_id)       ──►  {commit_id, label, ops, files[{before, after}]}
+client  ──►  memory.stats                ──►  {commits, by_op_kind, by_profile, top_files, …}
 client  ──►  explain.patch(plan)         ──►  {verdict, evidence[], stats, summary}
 client  ──►  session.shutdown
 ```

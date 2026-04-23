@@ -18,13 +18,15 @@ use pf_core::{dispatch, Core};
 use pf_protocol::{
     EvidenceNodeDto, ExplainPatchParams, ExplainPatchResult, Id, IngestFactParams,
     InitializeParams, LlmProposeParams, LlmProposePatchParams, LlmProposePatchResult,
-    LlmProposeResult, LlmRefineParams, LlmRefineResult, PatchApplyParams, PatchApplyResult,
-    PatchPlanDto, PatchPreviewParams, PatchPreviewResult, PatchRollbackParams, PatchRollbackResult,
-    QueryParams, QueryResult, Request, Response, RulesEvaluateParams, RulesEvaluateResult,
-    RulesLoadParams, RulesLoadResult, ServerCapabilities, VerdictDto, WorkspaceId,
-    WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams, WorkspaceOpenResult,
-    METHOD_EXPLAIN_PATCH, METHOD_GRAPH_QUERY, METHOD_INITIALIZE, METHOD_LLM_PROPOSE,
-    METHOD_LLM_PROPOSE_PATCH, METHOD_LLM_REFINE, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW,
+    LlmProposeResult, LlmRefineParams, LlmRefineResult, MemoryGetParams, MemoryGetResult,
+    MemoryHistoryParams, MemoryHistoryResult, MemoryStatsParams, MemoryStatsResult,
+    PatchApplyParams, PatchApplyResult, PatchPlanDto, PatchPreviewParams, PatchPreviewResult,
+    PatchRollbackParams, PatchRollbackResult, QueryParams, QueryResult, Request, Response,
+    RulesEvaluateParams, RulesEvaluateResult, RulesLoadParams, RulesLoadResult, ServerCapabilities,
+    VerdictDto, WorkspaceId, WorkspaceIndexParams, WorkspaceIndexResult, WorkspaceOpenParams,
+    WorkspaceOpenResult, METHOD_EXPLAIN_PATCH, METHOD_GRAPH_QUERY, METHOD_INITIALIZE,
+    METHOD_LLM_PROPOSE, METHOD_LLM_PROPOSE_PATCH, METHOD_LLM_REFINE, METHOD_MEMORY_GET,
+    METHOD_MEMORY_HISTORY, METHOD_MEMORY_STATS, METHOD_PATCH_APPLY, METHOD_PATCH_PREVIEW,
     METHOD_PATCH_ROLLBACK, METHOD_RULES_EVALUATE, METHOD_RULES_LOAD, METHOD_WORKSPACE_INDEX,
     METHOD_WORKSPACE_OPEN,
 };
@@ -109,6 +111,41 @@ enum Cmd {
         root: PathBuf,
         /// Commit id returned by `pf rename --apply` (or any other apply).
         commit_id: String,
+    },
+    /// List committed patches newest-first — the queryable view of
+    /// the runtime's journal. Phase 1.14's "what have I done on this
+    /// repo" surface.
+    History {
+        /// Workspace root.
+        root: PathBuf,
+        /// Optional filter: only entries whose label starts with this.
+        #[arg(long)]
+        label_prefix: Option<String>,
+        /// Optional filter: only entries that include this op tag
+        /// (`rename_function`, `rename_function_typed`,
+        /// `add_derive_to_struct`).
+        #[arg(long)]
+        op_tag: Option<String>,
+        /// Optional filter: only entries with this validation profile
+        /// (`default`, `typed`, `tested`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Cap the output at N entries.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show one committed patch's full journal entry (metadata +
+    /// before/after bytes of every file).
+    Show {
+        /// Workspace root.
+        root: PathBuf,
+        commit_id: String,
+    },
+    /// Aggregate stats over the whole journal: count by op kind, by
+    /// validation profile, top-N most-edited files.
+    Stats {
+        /// Workspace root.
+        root: PathBuf,
     },
     /// Index a Rust project then ask the bounded LLM orchestrator to
     /// propose candidate facts anchored at the given entity id.
@@ -257,6 +294,15 @@ fn main() -> Result<()> {
             scope_resolved,
         } => cmd_rename(root, from, to, apply, typecheck, run_tests, scope_resolved),
         Cmd::Rollback { root, commit_id } => cmd_rollback(root, commit_id),
+        Cmd::History {
+            root,
+            label_prefix,
+            op_tag,
+            profile,
+            limit,
+        } => cmd_history(root, label_prefix, op_tag, profile, limit),
+        Cmd::Show { root, commit_id } => cmd_show(root, commit_id),
+        Cmd::Stats { root } => cmd_stats(root),
     }
 }
 
@@ -1122,6 +1168,139 @@ fn cmd_query(file: PathBuf, pattern: String) -> Result<()> {
         println!("  {}", b);
     }
     Ok(())
+}
+
+fn cmd_history(
+    root: PathBuf,
+    label_prefix: Option<String>,
+    op_tag: Option<String>,
+    profile: Option<String>,
+    limit: Option<usize>,
+) -> Result<()> {
+    let core = Core::new();
+    let ws = open_workspace(&core, &root)?;
+    let resp = call(
+        &core,
+        METHOD_MEMORY_HISTORY,
+        serde_json::to_value(MemoryHistoryParams {
+            workspace_id: ws,
+            label_prefix,
+            op_tag,
+            validation_profile: profile,
+            limit,
+        })?,
+    )?;
+    let r: MemoryHistoryResult = serde_json::from_value(resp)?;
+    if r.items.is_empty() {
+        println!("(no commits)");
+        return Ok(());
+    }
+    println!("{} commit(s), newest first:", r.items.len());
+    for item in &r.items {
+        let profile = item.validation_profile.as_deref().unwrap_or("-");
+        let ops = if item.ops_summary.is_empty() {
+            "(unknown)".to_string()
+        } else {
+            item.ops_summary.join(",")
+        };
+        println!(
+            "  {}  ts={}  profile={}  ops=[{}]  files={}  repl={}  label={}",
+            item.commit_id,
+            item.timestamp_unix,
+            profile,
+            ops,
+            item.files_changed,
+            item.total_replacements,
+            item.label,
+        );
+    }
+    Ok(())
+}
+
+fn cmd_show(root: PathBuf, commit_id: String) -> Result<()> {
+    let core = Core::new();
+    let ws = open_workspace(&core, &root)?;
+    let resp = call(
+        &core,
+        METHOD_MEMORY_GET,
+        serde_json::to_value(MemoryGetParams {
+            workspace_id: ws,
+            commit_id: commit_id.clone(),
+        })?,
+    )?;
+    let r: MemoryGetResult = serde_json::from_value(resp)?;
+    let profile = r.validation_profile.as_deref().unwrap_or("-");
+    println!(
+        "commit {} @ ts={} profile={} ops=[{}] repl={} files={}",
+        r.commit_id,
+        r.timestamp_unix,
+        profile,
+        r.ops_summary.join(","),
+        r.total_replacements,
+        r.files.len(),
+    );
+    println!("label: {}", r.label);
+    for f in &r.files {
+        println!(
+            "\n# {} ({} -> {} bytes)",
+            f.path,
+            f.before.len(),
+            f.after.len()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_stats(root: PathBuf) -> Result<()> {
+    let core = Core::new();
+    let ws = open_workspace(&core, &root)?;
+    let resp = call(
+        &core,
+        METHOD_MEMORY_STATS,
+        serde_json::to_value(MemoryStatsParams { workspace_id: ws })?,
+    )?;
+    let r: MemoryStatsResult = serde_json::from_value(resp)?;
+    println!(
+        "commits: {}  files touched: {}  bytes written: {}",
+        r.commits, r.files_touched, r.total_bytes_written
+    );
+    if let (Some(a), Some(b)) = (r.first_commit_at, r.last_commit_at) {
+        println!("first: ts={}  last: ts={}", a, b);
+    }
+    if !r.by_op_kind.is_empty() {
+        println!("by op kind:");
+        for (k, v) in &r.by_op_kind {
+            println!("  {k}: {v}");
+        }
+    }
+    if !r.by_validation_profile.is_empty() {
+        println!("by validation profile:");
+        for (k, v) in &r.by_validation_profile {
+            println!("  {k}: {v}");
+        }
+    }
+    if !r.top_files.is_empty() {
+        println!("top files (by edit count):");
+        for f in &r.top_files {
+            println!("  {} — {}", f.path, f.commit_count);
+        }
+    }
+    Ok(())
+}
+
+/// Helper used by the memory subcommands — opens the workspace and
+/// returns its id. Unlike the Datalog-centric `open` above, this
+/// doesn't load a rule file; `pf history` / `show` / `stats` only
+/// need the workspace to resolve the journal path.
+fn open_workspace(core: &Core, root: &std::path::Path) -> Result<WorkspaceId> {
+    let resp = call(
+        core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    Ok(serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id)
 }
 
 fn open(file: &PathBuf) -> Result<(Core, WorkspaceId)> {

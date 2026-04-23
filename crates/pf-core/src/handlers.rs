@@ -26,6 +26,9 @@ pub fn route(core: &Core, method: &str, params: Value) -> Result<Value, RpcError
         METHOD_PATCH_APPLY => handle_patch_apply(core, params),
         METHOD_PATCH_ROLLBACK => handle_patch_rollback(core, params),
         METHOD_EXPLAIN_PATCH => handle_explain_patch(core, params),
+        METHOD_MEMORY_HISTORY => handle_memory_history(core, params),
+        METHOD_MEMORY_GET => handle_memory_get(core, params),
+        METHOD_MEMORY_STATS => handle_memory_stats(core, params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -57,6 +60,9 @@ fn handle_initialize(params: Value) -> Result<Value, RpcError> {
             METHOD_PATCH_APPLY.into(),
             METHOD_PATCH_ROLLBACK.into(),
             METHOD_EXPLAIN_PATCH.into(),
+            METHOD_MEMORY_HISTORY.into(),
+            METHOD_MEMORY_GET.into(),
+            METHOD_MEMORY_STATS.into(),
         ],
     };
     Ok(serde_json::to_value(caps).unwrap())
@@ -362,7 +368,18 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
                     }
                 })
                 .collect();
-            let entry = crate::journal::new_entry(out.commit_id.clone(), plan_label, files);
+            // Phase 1.14: record op tags + profile + replacement
+            // count so `memory.stats` can aggregate without parsing
+            // the free-text `label`.
+            let ops_summary: Vec<String> = plan.ops.iter().map(op_tag).collect();
+            let entry = crate::journal::new_entry_with_stats(
+                out.commit_id.clone(),
+                plan_label,
+                files,
+                ops_summary,
+                Some(profile.to_string()),
+                total_replacements,
+            );
             if let Err(e) = crate::journal::write(&root, &entry) {
                 tracing::warn!("commit journal write failed: {e}");
             }
@@ -809,6 +826,103 @@ fn handle_explain_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
         .map_err(RpcError::invalid_params)?;
 
     Ok(serde_json::to_value(explanation_to_dto(explanation)).unwrap())
+}
+
+fn handle_memory_history(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: MemoryHistoryParams = decode(params)?;
+    let root = core
+        .with_workspace(&p.workspace_id, |w, _st| std::path::PathBuf::from(&w.root))
+        .map_err(RpcError::invalid_params)?;
+    let filter = crate::memory::HistoryFilter {
+        label_prefix: p.label_prefix,
+        op_tag: p.op_tag,
+        validation_profile: p.validation_profile,
+        limit: p.limit,
+    };
+    let items =
+        crate::memory::history(&root, &filter).map_err(|e| RpcError::internal(e.to_string()))?;
+    let dto = MemoryHistoryResult {
+        items: items
+            .into_iter()
+            .map(|it| MemoryHistoryItemDto {
+                commit_id: it.commit_id,
+                timestamp_unix: it.timestamp_unix,
+                label: it.label,
+                files_changed: it.files_changed,
+                bytes_after: it.bytes_after,
+                ops_summary: it.ops_summary,
+                validation_profile: it.validation_profile,
+                total_replacements: it.total_replacements,
+            })
+            .collect(),
+    };
+    Ok(serde_json::to_value(dto).unwrap())
+}
+
+fn handle_memory_get(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: MemoryGetParams = decode(params)?;
+    let root = core
+        .with_workspace(&p.workspace_id, |w, _st| std::path::PathBuf::from(&w.root))
+        .map_err(RpcError::invalid_params)?;
+    let entry = crate::memory::get(&root, &p.commit_id).map_err(|e| match e {
+        crate::journal::JournalError::NotFound(id) => {
+            RpcError::invalid_params(format!("commit not found: {id}"))
+        }
+        other => RpcError::internal(other.to_string()),
+    })?;
+    let dto = MemoryGetResult {
+        commit_id: entry.commit_id,
+        timestamp_unix: entry.timestamp_unix,
+        label: entry.label,
+        ops_summary: entry.ops_summary,
+        validation_profile: entry.validation_profile,
+        total_replacements: entry.total_replacements,
+        files: entry
+            .files
+            .into_iter()
+            .map(|f| CommitFileDto {
+                path: f.path,
+                before: f.before,
+                after: f.after,
+            })
+            .collect(),
+    };
+    Ok(serde_json::to_value(dto).unwrap())
+}
+
+fn handle_memory_stats(core: &Core, params: Value) -> Result<Value, RpcError> {
+    let p: MemoryStatsParams = decode(params)?;
+    let root = core
+        .with_workspace(&p.workspace_id, |w, _st| std::path::PathBuf::from(&w.root))
+        .map_err(RpcError::invalid_params)?;
+    let s = crate::memory::stats(&root).map_err(|e| RpcError::internal(e.to_string()))?;
+    let dto = MemoryStatsResult {
+        commits: s.commits,
+        files_touched: s.files_touched,
+        by_op_kind: s.by_op_kind,
+        by_validation_profile: s.by_validation_profile,
+        top_files: s
+            .top_files
+            .into_iter()
+            .map(|(path, commit_count)| MemoryTopFileDto { path, commit_count })
+            .collect(),
+        first_commit_at: s.first_commit_at,
+        last_commit_at: s.last_commit_at,
+        total_bytes_written: s.total_bytes_written,
+    };
+    Ok(serde_json::to_value(dto).unwrap())
+}
+
+/// Canonical tag string for a patch op, matching the wire `op` field
+/// used in `PatchPlanDto::ops`. Shared between the journal writer
+/// (stats / memory surface) and future consumers that need to group by
+/// op kind without round-tripping through JSON.
+fn op_tag(op: &pf_patch::PatchOp) -> String {
+    match op {
+        pf_patch::PatchOp::RenameFunction { .. } => "rename_function".into(),
+        pf_patch::PatchOp::RenameFunctionTyped { .. } => "rename_function_typed".into(),
+        pf_patch::PatchOp::AddDeriveToStruct { .. } => "add_derive_to_struct".into(),
+    }
 }
 
 fn anchors_from_ops(ops: &[pf_patch::PatchOp]) -> Vec<String> {
