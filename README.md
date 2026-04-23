@@ -11,21 +11,18 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 11** — scope-resolved rename (Step 2 of
-> type-aware) via rust-analyzer. A new `pf-ra-client` crate ships a
-> minimal LSP client (Content-Length framing, spawn / initialize /
-> rename / shutdown) and the new `PatchOp::RenameFunctionTyped` variant
-> routes renames through it: the pipeline mirrors the shadow to a temp
-> directory, spawns rust-analyzer against it, asks for a
-> `textDocument/rename`, and applies the returned `WorkspaceEdit` back
-> to the in-memory shadow. A shadowed local variable of the same name
-> as the function is now left alone; only real references to the
-> symbol are renamed. When rust-analyzer is absent the op degrades
-> gracefully (preview-level diagnostic, FS untouched), the same
-> oracle-as-optional pattern `CargoCheckStage` uses when `cargo` is
-> missing. `pf rename --scope-resolved` wires the flag on the CLI; the
-> LLM orchestrator's `llm.propose_patch` validator also recognises the
-> new op tag. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 12** — the patch algebra opens up beyond
+> rename. New `PatchOp::AddDeriveToStruct` merges traits into an
+> existing `#[derive(...)]` attribute on a struct / enum / union, or
+> inserts a fresh `#[derive(...)]` attribute above the item when there
+> is none; duplicates are skipped so the op is idempotent. Syn-driven
+> (byte-span edit + post-rewrite re-parse), so strings, comments,
+> macro bodies and unrelated attributes stay untouched. `llm.propose_patch`
+> now recognises the new op tag and grounds its `type_name` against
+> `struct_def` / `enum_def` / `union_def` / `type_def` facts in the
+> graph. New `pf add-derive` CLI subcommand. Demonstrates that the
+> pipeline (preview → validate → apply → explain → propose) is
+> op-kind-agnostic end-to-end. See [Roadmap](#roadmap).
 
 ---
 
@@ -100,7 +97,7 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-ingest`](crates/pf-ingest) | Filesystem walker and source dispatch |
 | [`pf-lang-rust`](crates/pf-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
 | [`pf-llm`](crates/pf-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard, one-shot `propose` + iterative `refine` loop |
-| [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate Rust rename. Two variants: `RenameFunction` (Phase 1.10, macro-aware) and `RenameFunctionTyped` (Phase 1.11, scope-resolved via rust-analyzer) |
+| [`pf-patch`](crates/pf-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate `syn`-driven span edits. Op vocabulary: `RenameFunction` (macro-aware, Phase 1.10), `RenameFunctionTyped` (scope-resolved via rust-analyzer, Phase 1.11), `AddDeriveToStruct` (merge/insert `#[derive(...)]`, Phase 1.12) |
 | [`pf-ra-client`](crates/pf-ra-client) | Minimal LSP client for `rust-analyzer`: Content-Length framing, spawn/initialize/rename/shutdown, in-process mock server for tests. Powers the Step 2 scope-resolved rename. |
 | [`pf-validate`](crates/pf-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline`. Semantic stages (`RuleStage`, `CargoCheckStage`) live in `pf-core`. |
 | [`pf-explain`](crates/pf-explain) | Proof-carrying explainer: composes observed / inferred / candidate evidence + rule activations + validation stages into a single `Explanation` with a synthesized verdict |
@@ -475,7 +472,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.9** | `llm.propose_patch` (LLM emits typed `PatchPlan`s instead of fact candidates; op-registry + identifier grounding on every candidate), `pf propose-patch` CLI chains *propose → explain.patch* end-to-end | **shipped** |
 | **1.10** | Macro-aware rename (Step 1 of type-aware): `syn` visitor descends into every function-call macro's token stream, skips `macro_rules!` meta-var grammar, uses a `$`-adjacency guard. Eliminates the most visible Step-0 bug (`assert_eq!(add(1,2), 3)` now renames `add`). | **shipped** |
 | **1.11** | Scope-resolved rename (Step 2 of type-aware): new `pf-ra-client` crate (LSP client + in-process mock), new `PatchOp::RenameFunctionTyped` variant, `pf rename --scope-resolved` CLI flag. Graceful degradation when rust-analyzer isn't on `PATH`. | **shipped** |
-| 1.12 (MVP rest) | Persistent rust-analyzer session (avoid re-indexing per request), impacted-tests selection, VS Code adapter minimal | 2–3 months |
+| **1.12** | First non-rename op: `PatchOp::AddDeriveToStruct`. Syn-based merge-or-insert of `#[derive(...)]` on struct/enum/union, idempotent, grounded by `struct_def`/`enum_def`/`union_def`/`type_def` facts. MockProvider emits `add_derive` candidates; `llm.propose_patch` validator recognises the op. `pf add-derive` CLI. | **shipped** |
+| 1.13 (MVP rest) | Persistent rust-analyzer session (avoid re-indexing per request), impacted-tests selection, VS Code adapter minimal, more editing ops (extract/inline/move) | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

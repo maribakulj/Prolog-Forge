@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 11 (scope-resolved rename: Step 2 of type-aware)
+## Current state — Phase 1 step 12 (patch algebra expanded: `add_derive_to_struct`)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -21,7 +21,7 @@ JSON-RPC.
 | `pf-ingest` | Filesystem walker, source-file dispatch. |
 | `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
 | `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only, deterministic ordering), prompt builder, content-addressed response cache, identifier-resolution guard. Three LLM modes: `propose` (fact candidates), `refine` (iterative revision with prior rejections + diagnostics), and `propose_patch` (typed `PatchPlan` candidates grounded against the op vocabulary). |
-| `pf-patch` | Typed patch planner: `PatchOp` (`RenameFunction` macro-aware, `RenameFunctionTyped` scope-resolved via rust-analyzer), `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
+| `pf-patch` | Typed patch planner. Op vocabulary: `RenameFunction` (macro-aware, Phase 1.10), `RenameFunctionTyped` (scope-resolved via rust-analyzer, Phase 1.11), `AddDeriveToStruct` (merge-or-insert `#[derive(...)]` on struct/enum/union, Phase 1.12). `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
 | `pf-ra-client` | Minimal LSP client for rust-analyzer: Content-Length framing, spawn / initialize / rename / shutdown, in-process mock server for tests. Graceful degradation when RA is absent — the caller receives `ClientError::NotAvailable` and falls back to the syntactic path. |
 | `pf-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. Semantic stages (`RuleStage`, `CargoCheckStage`, `CargoTestStage`) live in `pf-core` where the dependencies they need are available. |
 | `pf-explain` | Proof-carrying explainer: composes observed / inferred / candidate evidence, rule activations (head + premises via `pf_rules::trace_derivations`), and validation stage outcomes into a single `Explanation` with a synthesized verdict. Pure; no I/O. |

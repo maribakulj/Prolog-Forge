@@ -191,6 +191,40 @@ fn apply_op(
                 }),
             }
         }
+        PatchOp::AddDeriveToStruct {
+            type_name,
+            derives,
+            files,
+        } => {
+            let paths: Vec<String> = if files.is_empty() {
+                working
+                    .keys()
+                    .filter(|p| p.ends_with(".rs"))
+                    .cloned()
+                    .collect()
+            } else {
+                files
+                    .iter()
+                    .filter(|p| working.contains_key(p.as_str()))
+                    .cloned()
+                    .collect()
+            };
+            for path in paths {
+                let src = working.get(&path).cloned().unwrap_or_default();
+                match crate::add_derive::add_derive(&src, type_name, derives) {
+                    Ok((new_src, n)) => {
+                        if n > 0 {
+                            working.insert(path.clone(), new_src);
+                            *replacements.entry(path).or_insert(0) += n;
+                        }
+                    }
+                    Err(msg) => errors.push(PreviewError {
+                        file: path,
+                        message: msg,
+                    }),
+                }
+            }
+        }
     }
 }
 

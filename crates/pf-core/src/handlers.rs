@@ -818,6 +818,18 @@ fn anchors_from_ops(ops: &[pf_patch::PatchOp]) -> Vec<String> {
                 }
                 out.push(new_name.clone());
             }
+            pf_patch::PatchOp::AddDeriveToStruct {
+                type_name, derives, ..
+            } => {
+                // The type name is the primary anchor — the explainer
+                // uses it to surface the `struct_def(_, type_name)`
+                // observed fact. The derive names themselves are
+                // anchors too: in a future phase a rule pack might
+                // emit `violation(X) :- has_derive(X, "Unsafe")` and
+                // the explainer needs to see those.
+                out.push(type_name.clone());
+                out.extend(derives.iter().cloned());
+            }
         }
     }
     out.sort();

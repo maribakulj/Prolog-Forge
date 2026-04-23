@@ -168,6 +168,26 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         profile: String,
     },
+    /// Add one or more derives to a struct / enum / union. Merges into
+    /// any existing `#[derive(...)]` on the target, skipping duplicates;
+    /// inserts a fresh `#[derive(...)]` attribute above the item
+    /// otherwise. Preview is pure; pass `--apply` to write.
+    AddDerive {
+        /// Workspace root.
+        root: PathBuf,
+        /// Name of the target struct/enum/union (no path — see the
+        /// `add_derive_to_struct` op in the protocol for the full
+        /// shape).
+        #[arg(long = "type")]
+        type_name: String,
+        /// Comma-separated list of derive paths, e.g.
+        /// `Debug,Clone,serde::Serialize`.
+        #[arg(long)]
+        derives: String,
+        /// Actually write the patch to disk after validation.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Produce a proof-carrying explanation for a rename plan: which
     /// observed facts are cited, which rules fire on the shadow graph,
     /// which candidates were considered, which validation stages ran, and
@@ -215,6 +235,12 @@ fn main() -> Result<()> {
             hops,
             profile,
         } => cmd_propose_patch(root, anchor, intent, hops, profile),
+        Cmd::AddDerive {
+            root,
+            type_name,
+            derives,
+            apply,
+        } => cmd_add_derive(root, type_name, derives, apply),
         Cmd::Explain {
             root,
             from,
@@ -711,6 +737,100 @@ fn cmd_propose_patch(
                 println!("         verdict: not proven ({reason})");
             }
         }
+    }
+    Ok(())
+}
+
+fn cmd_add_derive(
+    root: PathBuf,
+    type_name: String,
+    derives_csv: String,
+    apply: bool,
+) -> Result<()> {
+    let derives: Vec<String> = derives_csv
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if derives.is_empty() {
+        anyhow::bail!("--derives must list at least one trait name");
+    }
+
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let op = serde_json::json!({
+        "op": "add_derive_to_struct",
+        "type_name": type_name,
+        "derives": derives,
+        "files": [],
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("add derive({}) to {type_name}", derives.join(", ")),
+    };
+
+    // Preview first, same shape as `pf rename`.
+    let resp = call(
+        &core,
+        METHOD_PATCH_PREVIEW,
+        serde_json::to_value(PatchPreviewParams {
+            workspace_id: ws.clone(),
+            plan: plan.clone(),
+        })?,
+    )?;
+    let preview: PatchPreviewResult = serde_json::from_value(resp)?;
+    println!(
+        "preview: {} new derive(s) across {} file(s)",
+        preview.total_replacements,
+        preview.files.len()
+    );
+    for e in &preview.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+    for f in &preview.files {
+        println!(
+            "\n# {} ({} bytes -> {} bytes, {} new derive(s))",
+            f.path, f.before_len, f.after_len, f.replacements
+        );
+        println!("{}", f.diff);
+    }
+
+    if !apply {
+        return Ok(());
+    }
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_APPLY,
+        serde_json::to_value(PatchApplyParams {
+            workspace_id: ws,
+            plan,
+            validation_profile: None,
+        })?,
+    )?;
+    let result: PatchApplyResult = serde_json::from_value(resp)?;
+    println!();
+    if result.applied {
+        println!(
+            "applied: commit {} ({} file(s), {} bytes)",
+            result.commit_id.as_deref().unwrap_or("-"),
+            result.files_written,
+            result.bytes_written
+        );
+    } else {
+        println!(
+            "rejected: {}",
+            result.rejection_reason.as_deref().unwrap_or("unknown")
+        );
+        std::process::exit(2);
     }
     Ok(())
 }

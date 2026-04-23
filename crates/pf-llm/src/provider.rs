@@ -143,6 +143,27 @@ fn mock_propose_patch(user: &str) -> String {
             "justification": format!("mark {name} as renamed for review"),
         }));
     }
+    // Also exercise the `add_derive_to_struct` op path when the context
+    // has any struct_def entries. The derive set is deliberately
+    // reasonable-by-default (Debug+Clone) rather than aspirational —
+    // the point is to prove the op shape round-trips through the
+    // validator, not to suggest a refactor.
+    for (_id, type_name) in context_types(user) {
+        candidates.push(serde_json::json!({
+            "plan": {
+                "ops": [{
+                    "op": "add_derive_to_struct",
+                    "type_name": type_name,
+                    "derives": ["Debug", "Clone"],
+                    "files": [],
+                }],
+                "label": format!("add Debug, Clone to {type_name}"),
+            },
+            "justification": format!(
+                "add Debug + Clone to {type_name} to make it easy to log and copy"
+            ),
+        }));
+    }
     // One plan on a hallucinated name — exercises the op-resolution guard.
     candidates.push(serde_json::json!({
         "plan": {
@@ -157,6 +178,46 @@ fn mock_propose_patch(user: &str) -> String {
         "justification": "intentional hallucination to exercise the op-resolution guard",
     }));
     serde_json::json!({ "candidates": candidates }).to_string()
+}
+
+/// Scan the rendered context for `struct_def(<id>, <name>).` /
+/// `enum_def(<id>, <name>).` / `union_def(<id>, <name>).` /
+/// `type_def(<id>, <name>).` lines and return their `(id, name)` pairs.
+/// Used by the `add_derive_to_struct` mock proposal branch.
+fn context_types(user: &str) -> Vec<(String, String)> {
+    let mut in_context = false;
+    let mut out = Vec::new();
+    for line in user.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Context (") {
+            in_context = true;
+            continue;
+        }
+        if trimmed.starts_with("Prior rejections")
+            || trimmed.starts_with("Prior validator diagnostics")
+            || trimmed.starts_with("Respond with JSON")
+        {
+            in_context = false;
+            continue;
+        }
+        if !in_context {
+            continue;
+        }
+        let trimmed = trimmed.trim_end_matches('.');
+        for prefix in ["struct_def(", "enum_def(", "union_def(", "type_def("] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                if let Some(end) = rest.find(')') {
+                    let inner = &rest[..end];
+                    let parts: Vec<&str> = inner.splitn(2, ',').map(|s| s.trim()).collect();
+                    if parts.len() == 2 {
+                        out.push((parts[0].to_string(), parts[1].to_string()));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Helper: extract `(id, name)` pairs from the rendered context block.

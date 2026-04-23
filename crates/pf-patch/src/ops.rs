@@ -57,6 +57,30 @@ pub enum PatchOp {
         #[serde(default)]
         old_name: String,
     },
+    /// Add one or more trait names to the `#[derive(...)]` attribute of
+    /// a struct, enum, or union. Merges into the first existing
+    /// `#[derive(...)]` attribute if there is one; otherwise inserts a
+    /// fresh `#[derive(...)]` line immediately above the `struct` /
+    /// `enum` / `union` keyword. Duplicates (a derive already listed on
+    /// the target) are skipped — the op is idempotent.
+    ///
+    /// The transform is syn-driven: structured parse, span-located
+    /// byte edit, and a mandatory post-edit re-parse that rejects any
+    /// rewrite that would break Rust syntax. Strings, comments, macro
+    /// bodies and unrelated attributes are never touched.
+    AddDeriveToStruct {
+        /// Name of the target type (struct / enum / union).
+        type_name: String,
+        /// Trait names to add. Each must be a valid Rust identifier or
+        /// a path like `serde::Serialize`. Duplicates with existing
+        /// derives on the target are skipped.
+        derives: Vec<String>,
+        /// If empty, the op runs on every `.rs` file in the preview
+        /// input. Otherwise it is restricted to paths whose
+        /// `relative` form matches one of the entries exactly.
+        #[serde(default)]
+        files: Vec<String>,
+    },
 }
 
 /// A `PatchPlan` is an ordered sequence of ops plus auditable metadata.

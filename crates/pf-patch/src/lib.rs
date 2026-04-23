@@ -16,6 +16,7 @@
 //! Application (write back to FS transactionally), validation, and
 //! LLM-driven planning land in 1.3 step 2 and 1.4.
 
+pub mod add_derive;
 pub mod ops;
 pub mod plan;
 pub mod rust_rename;

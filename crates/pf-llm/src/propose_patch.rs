@@ -107,6 +107,7 @@ pub fn propose_patch(
     // accepted or rejected independently so one hallucination does not
     // throw out the rest of the batch.
     let known_function_names = known_function_names(graph);
+    let known_type_names = known_type_names(graph);
     let mut result = ProposePatchResult {
         cache_hit,
         tokens_in: raw.tokens_in,
@@ -114,7 +115,7 @@ pub fn propose_patch(
         ..Default::default()
     };
     for c in parsed.candidates {
-        let verdict = validate_plan(&c.plan, &known_function_names);
+        let verdict = validate_plan(&c.plan, &known_function_names, &known_type_names);
         let (accepted, rejection_reason) = match verdict {
             Ok(()) => (true, None),
             Err(reason) => (false, Some(reason)),
@@ -160,12 +161,33 @@ fn known_function_names(graph: &GraphStore) -> HashSet<String> {
     set
 }
 
+/// Collect every type name the graph knows about — structs, enums,
+/// unions, and plain `type` aliases. Used to ground
+/// `add_derive_to_struct` ops. Kept separate from
+/// [`known_function_names`] so a rename op can't accidentally target a
+/// struct (and vice versa).
+fn known_type_names(graph: &GraphStore) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for pred in ["struct_def", "enum_def", "union_def", "type_def"] {
+        for f in graph.facts_of(pred) {
+            if let Some(name) = f.args.get(1) {
+                set.insert(name.clone());
+            }
+        }
+    }
+    set
+}
+
 /// Validate a single plan: each op must be a known variant, and each
 /// op's grounded identifiers must exist in the graph. Returns `Ok(())`
 /// on accept, `Err(reason)` on reject. The reason string is the wire
 /// representation of the rejection so the caller (`explain.patch` in
 /// particular) can display it.
-fn validate_plan(plan: &PlanShape, known_function_names: &HashSet<String>) -> Result<(), String> {
+fn validate_plan(
+    plan: &PlanShape,
+    known_function_names: &HashSet<String>,
+    known_type_names: &HashSet<String>,
+) -> Result<(), String> {
     if plan.ops.is_empty() {
         return Err("plan has no ops".into());
     }
@@ -229,9 +251,48 @@ fn validate_plan(plan: &PlanShape, known_function_names: &HashSet<String>) -> Re
                     }
                 }
             }
+            "add_derive_to_struct" => {
+                // Off-rename ops: prove the algebra is extensible.
+                // Grounding: the `type_name` must exist as a
+                // `struct_def/_/_`, `type_def/_/_`, or similar kind in
+                // the graph. `derives` must be a non-empty string list.
+                let type_name = raw
+                    .get("type_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] add_derive_to_struct missing `type_name` string")
+                    })?;
+                let derives = raw
+                    .get("derives")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] add_derive_to_struct missing `derives` array")
+                    })?;
+                if derives.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] add_derive_to_struct: `derives` must be non-empty"
+                    ));
+                }
+                for (j, d) in derives.iter().enumerate() {
+                    let s = d.as_str().ok_or_else(|| {
+                        format!("op[{idx}] add_derive_to_struct: derives[{j}] is not a string")
+                    })?;
+                    if s.is_empty() {
+                        return Err(format!(
+                            "op[{idx}] add_derive_to_struct: derives[{j}] is empty"
+                        ));
+                    }
+                }
+                if !known_type_names.contains(type_name) {
+                    return Err(format!(
+                        "op[{idx}] add_derive_to_struct: unknown type `{type_name}` (hallucination)"
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
-                    "op[{idx}] unknown op tag `{other}` (known: rename_function, rename_function_typed)"
+                    "op[{idx}] unknown op tag `{other}` (known: rename_function, \
+                     rename_function_typed, add_derive_to_struct)"
                 ));
             }
         }
@@ -332,7 +393,49 @@ mod tests {
             label: "bogus".into(),
         };
         let known: HashSet<String> = ["add".into()].into_iter().collect();
-        let err = validate_plan(&plan, &known).unwrap_err();
+        let types: HashSet<String> = HashSet::new();
+        let err = validate_plan(&plan, &known, &types).unwrap_err();
         assert!(err.contains("unknown op tag"), "{err}");
+    }
+
+    #[test]
+    fn add_derive_plan_is_accepted_when_grounded() {
+        let mut g = GraphStore::new();
+        g.insert(pf_graph::Fact {
+            predicate: "struct_def".into(),
+            args: vec!["id_counter".into(), "Counter".into()],
+            layer: pf_protocol::FactLayer::Observed,
+        })
+        .unwrap();
+        let plan = PlanShape {
+            ops: vec![serde_json::json!({
+                "op": "add_derive_to_struct",
+                "type_name": "Counter",
+                "derives": ["Debug", "Clone"],
+            })],
+            label: "add_derive".into(),
+        };
+        let funcs: HashSet<String> = HashSet::new();
+        let types = known_type_names(&g);
+        assert!(types.contains("Counter"));
+        validate_plan(&plan, &funcs, &types).expect("well-grounded add_derive must validate");
+    }
+
+    #[test]
+    fn add_derive_plan_rejects_unknown_type() {
+        let g = GraphStore::new();
+        let plan = PlanShape {
+            ops: vec![serde_json::json!({
+                "op": "add_derive_to_struct",
+                "type_name": "NotARealType",
+                "derives": ["Debug"],
+            })],
+            label: "hallucinated".into(),
+        };
+        let funcs: HashSet<String> = HashSet::new();
+        let types = known_type_names(&g);
+        let err = validate_plan(&plan, &funcs, &types).unwrap_err();
+        assert!(err.contains("unknown type"), "{err}");
+        assert!(err.contains("hallucination"), "{err}");
     }
 }

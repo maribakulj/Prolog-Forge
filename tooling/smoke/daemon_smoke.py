@@ -733,6 +733,85 @@ def main() -> int:
             assert "pub fn add(" in f.read(), "typed preview must not touch disk"
         shutil.rmtree(scratch7_root, ignore_errors=True)
 
+        # ---- Phase 1.12: add_derive_to_struct — the first op that
+        # isn't a rename. Proves the pipeline tolerates ops of another
+        # shape end-to-end. We preview + apply `#[derive(Debug, Clone)]`
+        # on `Counter`, assert the on-disk file gained the attribute,
+        # and that the syntactic-stage revalidation still passes.
+        scratch8_root = tempfile.mkdtemp(prefix="pf-smoke-add-derive-")
+        scratch8_demo = os.path.join(scratch8_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch8_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 60, "method": "workspace.open",
+            "params": {"root": scratch8_demo},
+        })
+        ws_ad = recv(proc)["result"]["workspace_id"]
+        send(proc, {
+            "jsonrpc": "2.0", "id": 61, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws_ad,
+                "plan": {
+                    "ops": [{
+                        "op": "add_derive_to_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug", "Clone"],
+                        "files": [],
+                    }],
+                    "label": "smoke: add derive(Debug, Clone) to Counter",
+                },
+            },
+        })
+        ad_prev = recv(proc)["result"]
+        assert ad_prev["total_replacements"] == 2, ad_prev
+        assert len(ad_prev["files"]) == 1, ad_prev
+        assert "+#[derive(Debug, Clone)]" in ad_prev["files"][0]["diff"], ad_prev
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 62, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_ad,
+                "plan": {
+                    "ops": [{
+                        "op": "add_derive_to_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug", "Clone"],
+                        "files": [],
+                    }],
+                    "label": "smoke: apply add_derive",
+                },
+            },
+        })
+        ad_app = recv(proc)["result"]
+        assert ad_app["applied"] is True, ad_app
+        with open(os.path.join(scratch8_demo, "src/lib.rs")) as f:
+            content = f.read()
+        assert "#[derive(Debug, Clone)]\npub struct Counter" in content, content
+
+        # Idempotency: re-applying the same op is a no-op at the
+        # replacement level (nothing new to add). The apply can still
+        # record a commit because the shadow equals the original —
+        # preview returns zero files and the preflight accepts.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 63, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws_ad,
+                "plan": {
+                    "ops": [{
+                        "op": "add_derive_to_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug", "Clone"],
+                        "files": [],
+                    }],
+                    "label": "smoke: re-apply add_derive (idempotent)",
+                },
+            },
+        })
+        ad_re = recv(proc)["result"]
+        assert ad_re["total_replacements"] == 0, ad_re
+        assert ad_re["files"] == [], ad_re
+
+        shutil.rmtree(scratch8_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)
