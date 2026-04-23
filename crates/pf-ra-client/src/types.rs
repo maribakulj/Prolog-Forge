@@ -181,3 +181,29 @@ pub(crate) struct RenameParams<'a> {
 pub(crate) struct TextDocumentIdentifier {
     pub uri: DocumentUri,
 }
+
+// ---- didChange params ----------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DidChangeTextDocumentParams {
+    #[serde(rename = "textDocument")]
+    pub text_document: VersionedTextDocumentIdentifier,
+    #[serde(rename = "contentChanges")]
+    pub content_changes: Vec<TextDocumentContentChangeEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct VersionedTextDocumentIdentifier {
+    pub uri: DocumentUri,
+    pub version: i32,
+}
+
+/// Full-text replace variant — omits the `range` field, which tells RA
+/// (and any LSP server) that `text` is the complete new contents of the
+/// document. Much simpler than tracking incremental edits, and a good
+/// fit for the persistent-session use case: the Core already owns the
+/// full file text.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct TextDocumentContentChangeEvent {
+    pub text: String,
+}

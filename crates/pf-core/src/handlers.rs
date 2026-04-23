@@ -220,7 +220,7 @@ fn handle_patch_preview(core: &Core, params: Value) -> Result<Value, RpcError> {
     let plan = pf_patch::PatchPlan::labelled(ops, p.plan.label);
 
     // Load source texts from the workspace root (Rust files only for now).
-    let files = core
+    let (root, files) = core
         .with_workspace(&p.workspace_id, |ws, _st| {
             let root = std::path::PathBuf::from(&ws.root);
             let mut map: std::collections::BTreeMap<String, String> =
@@ -233,12 +233,17 @@ fn handle_patch_preview(core: &Core, params: Value) -> Result<Value, RpcError> {
                     map.insert(sf.relative.display().to_string(), src);
                 }
             }
-            map
+            (root, map)
         })
         .map_err(RpcError::invalid_params)?;
 
-    let preview =
-        pf_patch::preview(&plan, &files).map_err(|e| RpcError::internal(e.to_string()))?;
+    let session_key = root.display().to_string();
+    let resolver = crate::ra_pool::PooledResolver {
+        pool: &core.ra_pool,
+        session_key,
+    };
+    let preview = pf_patch::preview_with_resolver(&plan, &files, &resolver)
+        .map_err(|e| RpcError::internal(e.to_string()))?;
 
     Ok(serde_json::to_value(PatchPreviewResult {
         total_replacements: preview.total_replacements,
@@ -299,8 +304,11 @@ fn handle_patch_apply(core: &Core, params: Value) -> Result<Value, RpcError> {
         })
         .map_err(RpcError::invalid_params)?;
 
-    // Build the shadow file map by re-applying each op.
-    let shadow = build_shadow(&plan, &original);
+    // Build the shadow file map by re-applying each op. Typed-rename
+    // ops route through the Core's persistent RA session pool so
+    // back-to-back previews + applies reuse the same warm session.
+    let session_key = root.display().to_string();
+    let shadow = build_shadow(core, &session_key, &plan, &original);
 
     // Diff-based replacement count (for parity with preview's display).
     let total_replacements = shadow
@@ -461,16 +469,22 @@ fn build_pipeline(
     Ok(stages)
 }
 
-/// Thin wrapper around `pf_patch::apply_plan` so the `apply` and
-/// `explain` handlers share the same single op-dispatch path as
-/// `preview`. Keeping all op semantics (including the typed-rename
-/// fallback when rust-analyzer is absent) in `pf-patch` avoids
-/// bit-rot where `build_shadow` drifts behind the preview walk.
+/// Thin wrapper around `pf_patch::apply_plan_with_resolver` so the
+/// `apply` / `explain` / `preview` handlers share the same single
+/// op-dispatch path. `session_key` identifies the workspace for the
+/// RA session pool; passing it in (rather than pulling it out of the
+/// plan) keeps `pf-patch` oblivious to our pool implementation.
 fn build_shadow(
+    core: &Core,
+    session_key: &str,
     plan: &pf_patch::PatchPlan,
     original: &std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
-    let (working, _errors) = pf_patch::apply_plan(plan, original);
+    let resolver = crate::ra_pool::PooledResolver {
+        pool: &core.ra_pool,
+        session_key: session_key.to_string(),
+    };
+    let (working, _errors) = pf_patch::apply_plan_with_resolver(plan, original, &resolver);
     working
 }
 
@@ -725,7 +739,8 @@ fn handle_explain_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
     // Build shadow + run validation (same pipeline as patch.apply, but no
     // transactional write). `validation_profile` selects which stages run;
     // the default omits CargoCheckStage so `explain.patch` stays cheap.
-    let shadow = build_shadow(&plan, &original);
+    let session_key = root.display().to_string();
+    let shadow = build_shadow(core, &session_key, &plan, &original);
     let profile = p.validation_profile.as_deref().unwrap_or("default");
     let stages: Vec<Box<dyn ValidationStage>> =
         build_pipeline(profile, &root, &rules).map_err(RpcError::invalid_params)?;

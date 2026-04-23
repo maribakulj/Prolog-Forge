@@ -220,6 +220,67 @@ impl Client {
         Ok(edit)
     }
 
+    /// Send a `textDocument/didOpen` notification with the given text.
+    /// Unlike [`Client::rename`], this does not block on a response —
+    /// `didOpen` is a one-way LSP notification. Used by [`Session`] when
+    /// it first sees a file across a call boundary.
+    pub fn did_open(&mut self, file: &Path, text: &str, version: i32) -> Result<(), ClientError> {
+        let uri = DocumentUri::from_path(file);
+        self.notify(
+            "textDocument/didOpen",
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri,
+                    language_id: "rust",
+                    version,
+                    text: text.to_string(),
+                },
+            },
+        )
+    }
+
+    /// Send a `textDocument/didChange` notification with the full new
+    /// text. LSP accepts both incremental and full-document change
+    /// events; we always use the full variant because [`Session`]
+    /// already owns the complete new content. Server implementations
+    /// (rust-analyzer included) handle the full form unconditionally.
+    pub fn did_change(&mut self, file: &Path, text: &str, version: i32) -> Result<(), ClientError> {
+        let uri = DocumentUri::from_path(file);
+        self.notify(
+            "textDocument/didChange",
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier { uri, version },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    text: text.to_string(),
+                }],
+            },
+        )
+    }
+
+    /// Ask for a rename at `(file, line, character)` on a file the
+    /// caller has already synchronised via [`Client::did_open`] or
+    /// [`Client::did_change`]. Unlike [`Client::rename`], we do **not**
+    /// re-read the file from disk or re-send `didOpen` — a
+    /// persistent-session caller is responsible for keeping the server
+    /// in sync with its in-memory view.
+    pub fn rename_at(
+        &mut self,
+        file: &Path,
+        line: u32,
+        character: u32,
+        new_name: &str,
+    ) -> Result<WorkspaceEdit, ClientError> {
+        let uri = DocumentUri::from_path(file);
+        let params = RenameParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position { line, character },
+            new_name,
+        };
+        let result = self.request("textDocument/rename", &params)?;
+        let edit: WorkspaceEdit = serde_json::from_value(result)?;
+        Ok(edit)
+    }
+
     /// Best-effort shutdown. Sends `shutdown` + `exit`, then drops.
     pub fn shutdown(mut self) -> Result<(), ClientError> {
         let _ = self.request("shutdown", &serde_json::json!(null));

@@ -812,6 +812,62 @@ def main() -> int:
 
         shutil.rmtree(scratch8_root, ignore_errors=True)
 
+        # ---- Phase 1.13: persistent rust-analyzer session pool. We
+        # can't prove reuse observationally without RA installed, but
+        # we can assert the plumbing: issuing two back-to-back typed
+        # renames on the same workspace must not crash the daemon and
+        # must return the same degraded-gracefully diagnostic in both
+        # cases. Before the pool, two calls spawned two fresh
+        # processes and each one surfaced the same handshake-EOF
+        # error; after the pool, the pool's `spawn` attempt fails and
+        # stays out of the cache, so the second call repeats the same
+        # failure path. Either way, success is: no daemon death, no
+        # silent no-op, a clear diagnostic.
+        scratch9_root = tempfile.mkdtemp(prefix="pf-smoke-typed-pool-")
+        scratch9_demo = os.path.join(scratch9_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch9_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 70, "method": "workspace.open",
+            "params": {"root": scratch9_demo},
+        })
+        ws_pool = recv(proc)["result"]["workspace_id"]
+        for round_id, msg_id in enumerate([71, 72], start=1):
+            send(proc, {
+                "jsonrpc": "2.0", "id": msg_id, "method": "patch.preview",
+                "params": {
+                    "workspace_id": ws_pool,
+                    "plan": {
+                        "ops": [{
+                            "op": "rename_function_typed",
+                            "decl_file": "src/lib.rs",
+                            "decl_line": 2,
+                            "decl_character": 7,
+                            "new_name": f"sum_round_{round_id}",
+                            "old_name": "add",
+                        }],
+                        "label": f"smoke: pool round {round_id}",
+                    },
+                },
+            })
+            pool_prev = recv(proc)["result"]
+            # Either RA present (files populated) or absent (clear
+            # error). Crash = fail. Silent empty = fail.
+            if pool_prev["files"]:
+                assert any(
+                    f["path"] == "src/lib.rs" for f in pool_prev["files"]
+                ), pool_prev
+            else:
+                assert pool_prev["errors"], pool_prev
+                assert any(
+                    "rust-analyzer" in e["message"]
+                    or "rename_function_typed" in e["message"]
+                    for e in pool_prev["errors"]
+                ), pool_prev
+        # FS must still be untouched.
+        with open(os.path.join(scratch9_demo, "src/lib.rs")) as f:
+            assert "pub fn add(" in f.read(), "pool preview must not touch disk"
+        shutil.rmtree(scratch9_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

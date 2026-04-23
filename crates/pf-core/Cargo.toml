@@ -21,5 +21,6 @@ pf-llm.workspace = true
 pf-patch.workspace = true
 pf-validate.workspace = true
 pf-explain.workspace = true
+pf-ra-client.workspace = true
 tempfile = "3"
 walkdir = "2"

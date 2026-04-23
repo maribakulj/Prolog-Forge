@@ -30,6 +30,10 @@ pub struct Core {
     next_id: Mutex<u64>,
     pub llm_provider: Box<dyn LlmProvider>,
     pub llm_cache: ResponseCache,
+    /// Persistent rust-analyzer sessions keyed by workspace root.
+    /// Amortises the indexing cost across successive typed-rename
+    /// calls (see `crates/pf-core/src/ra_pool.rs`).
+    pub ra_pool: crate::ra_pool::RaSessionPool,
 }
 
 impl Default for Core {
@@ -39,6 +43,7 @@ impl Default for Core {
             next_id: Mutex::new(0),
             llm_provider: Box::new(MockProvider),
             llm_cache: ResponseCache::new(),
+            ra_pool: crate::ra_pool::RaSessionPool::new(),
         }
     }
 }

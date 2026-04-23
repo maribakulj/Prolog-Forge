@@ -49,6 +49,44 @@ pub struct TypedRenameRequest<'a> {
     pub timeout: Duration,
 }
 
+/// A pluggable resolver for `RenameFunctionTyped` ops.
+///
+/// The default implementation — [`OneShotResolver`] — spawns a fresh
+/// `rust-analyzer` process for every call, mirroring the in-memory
+/// file map to a throwaway tempdir. That is the simplest but also the
+/// slowest strategy: rust-analyzer's initial index is rebuilt per
+/// request. `pf-core`'s `RaSessionPool` implements the same trait but
+/// reuses a single RA session per workspace across calls, paying the
+/// indexing cost once.
+///
+/// The trait exists so `pf-patch::apply_plan` remains oblivious to
+/// who is on the other side of the resolver: one-shot, pool, future
+/// caching proxy — all interchangeable.
+pub trait TypedRenameResolver: Send + Sync {
+    /// Resolve a typed rename. The caller passes the current shadow
+    /// file map; the resolver returns the map after RA's edits are
+    /// applied. An implementation that fails to reach rust-analyzer
+    /// must return [`TypedRenameError::Unavailable`] so the planner
+    /// can emit a clear diagnostic and the apply can degrade
+    /// gracefully.
+    fn resolve(
+        &self,
+        req: TypedRenameRequest<'_>,
+    ) -> Result<BTreeMap<String, String>, TypedRenameError>;
+}
+
+/// Default one-shot resolver: every call spawns a fresh rust-analyzer.
+pub struct OneShotResolver;
+
+impl TypedRenameResolver for OneShotResolver {
+    fn resolve(
+        &self,
+        req: TypedRenameRequest<'_>,
+    ) -> Result<BTreeMap<String, String>, TypedRenameError> {
+        resolve(req)
+    }
+}
+
 /// Apply a scope-resolved rename. Returns the updated file map.
 pub fn resolve(req: TypedRenameRequest<'_>) -> Result<BTreeMap<String, String>, TypedRenameError> {
     if !req.files.contains_key(req.decl_file) {

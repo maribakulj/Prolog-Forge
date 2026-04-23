@@ -23,5 +23,11 @@ pub mod rust_rename;
 pub mod typed_rename;
 
 pub use ops::{PatchOp, PatchPlan};
-pub use plan::{apply_plan, preview, FilePatch, PatchError, PatchPreview};
-pub use typed_rename::{resolve as resolve_typed_rename, TypedRenameError, TypedRenameRequest};
+pub use plan::{
+    apply_plan, apply_plan_with_resolver, preview, preview_with_resolver, FilePatch, PatchError,
+    PatchPreview,
+};
+pub use typed_rename::{
+    resolve as resolve_typed_rename, OneShotResolver, TypedRenameError, TypedRenameRequest,
+    TypedRenameResolver,
+};

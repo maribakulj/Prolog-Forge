@@ -9,6 +9,7 @@ pub mod handlers;
 pub mod index;
 pub mod journal;
 pub mod lower;
+pub mod ra_pool;
 pub mod rollback;
 pub mod session;
 pub mod validate_stages;

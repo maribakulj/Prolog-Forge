@@ -56,15 +56,38 @@ pub enum PatchError {
 /// apply/explain paths (which need the shadow map directly and cannot
 /// reconstruct it from a diff). Centralising op handling here keeps
 /// typed-vs-syntactic rename semantics in one place.
+///
+/// Uses a fresh [`crate::OneShotResolver`] for any `RenameFunctionTyped`
+/// ops — every such op spawns a fresh `rust-analyzer`. Call
+/// [`apply_plan_with_resolver`] instead to plug in `pf-core`'s
+/// persistent session pool.
 pub fn apply_plan(
     plan: &PatchPlan,
     files: &BTreeMap<String, String>,
+) -> (BTreeMap<String, String>, Vec<PreviewError>) {
+    apply_plan_with_resolver(plan, files, &crate::OneShotResolver)
+}
+
+/// Same as [`apply_plan`] but lets the caller supply a persistent
+/// [`crate::TypedRenameResolver`]. `pf-core` passes its session pool
+/// here so successive typed-rename ops on the same workspace share a
+/// single warm `rust-analyzer`.
+pub fn apply_plan_with_resolver(
+    plan: &PatchPlan,
+    files: &BTreeMap<String, String>,
+    resolver: &dyn crate::TypedRenameResolver,
 ) -> (BTreeMap<String, String>, Vec<PreviewError>) {
     let mut working: BTreeMap<String, String> = files.clone();
     let mut per_file_replacements: BTreeMap<String, usize> = BTreeMap::new();
     let mut errors: Vec<PreviewError> = Vec::new();
     for op in &plan.ops {
-        apply_op(op, &mut working, &mut per_file_replacements, &mut errors);
+        apply_op(
+            op,
+            &mut working,
+            &mut per_file_replacements,
+            &mut errors,
+            resolver,
+        );
     }
     let _ = per_file_replacements;
     (working, errors)
@@ -74,13 +97,29 @@ pub fn preview(
     plan: &PatchPlan,
     files: &BTreeMap<String, String>,
 ) -> Result<PatchPreview, PatchError> {
+    preview_with_resolver(plan, files, &crate::OneShotResolver)
+}
+
+/// Variant of [`preview`] that takes a resolver for typed ops. Used
+/// by `pf-core` when the session pool is available.
+pub fn preview_with_resolver(
+    plan: &PatchPlan,
+    files: &BTreeMap<String, String>,
+    resolver: &dyn crate::TypedRenameResolver,
+) -> Result<PatchPreview, PatchError> {
     // Start from the input file set; each op produces a new set.
     let mut working: BTreeMap<String, String> = files.clone();
     let mut per_file_replacements: BTreeMap<String, usize> = BTreeMap::new();
     let mut errors: Vec<PreviewError> = Vec::new();
 
     for op in &plan.ops {
-        apply_op(op, &mut working, &mut per_file_replacements, &mut errors);
+        apply_op(
+            op,
+            &mut working,
+            &mut per_file_replacements,
+            &mut errors,
+            resolver,
+        );
     }
 
     let mut result = PatchPreview::default();
@@ -109,6 +148,7 @@ fn apply_op(
     working: &mut BTreeMap<String, String>,
     replacements: &mut BTreeMap<String, usize>,
     errors: &mut Vec<PreviewError>,
+    resolver: &dyn crate::TypedRenameResolver,
 ) {
     match op {
         PatchOp::RenameFunction {
@@ -152,11 +192,12 @@ fn apply_op(
             new_name,
             old_name: _,
         } => {
-            // Delegate to rust-analyzer. When RA is unavailable, emit a
-            // preview-level diagnostic and leave the shadow untouched.
-            // This matches the "oracle absent → warn + pass" pattern
-            // used by CargoCheckStage and keeps the pipeline honest.
-            match crate::typed_rename::resolve(crate::typed_rename::TypedRenameRequest {
+            // Delegate to the resolver. When RA is unavailable, emit
+            // a preview-level diagnostic and leave the shadow
+            // untouched. The resolver may be the one-shot variant
+            // (spawn per call) or the pool variant (persistent
+            // session) — the planner doesn't care.
+            match resolver.resolve(crate::typed_rename::TypedRenameRequest {
                 files: working,
                 decl_file,
                 decl_line: *decl_line,

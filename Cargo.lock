@@ -310,6 +310,7 @@ dependencies = [
  "pf-patch",
  "pf-persist",
  "pf-protocol",
+ "pf-ra-client",
  "pf-rules",
  "pf-validate",
  "serde",

@@ -30,6 +30,8 @@ pub mod transport;
 pub mod types;
 
 mod client;
+mod session;
 
 pub use client::{Client, ClientError, RenameRequest};
+pub use session::Session;
 pub use types::{DocumentUri, Position, Range, TextEdit, WorkspaceEdit};
