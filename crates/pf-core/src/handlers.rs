@@ -679,6 +679,42 @@ fn handle_llm_refine(core: &Core, params: Value) -> Result<Value, RpcError> {
 
 fn handle_llm_propose_patch(core: &Core, params: Value) -> Result<Value, RpcError> {
     let p: LlmProposePatchParams = decode(params)?;
+
+    // Phase 1.15: if the caller asks for memory-aware proposal, read
+    // the top-N recent commits into a `Vec<CommitEntry>` up-front
+    // (outside the workspace-state lock, since it's fs I/O) and keep
+    // them alive for the duration of the call. The `MemoryHint`
+    // borrows from this vec.
+    let memory_entries: Vec<crate::journal::CommitEntry> = match p.include_memory {
+        Some(n) if n > 0 => {
+            let root = core
+                .with_workspace(&p.workspace_id, |w, _st| std::path::PathBuf::from(&w.root))
+                .map_err(RpcError::invalid_params)?;
+            let items = crate::memory::history(
+                &root,
+                &crate::memory::HistoryFilter {
+                    limit: Some(n),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| RpcError::internal(e.to_string()))?;
+            items
+                .into_iter()
+                .filter_map(|it| crate::memory::get(&root, &it.commit_id).ok())
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let hints: Vec<pf_llm::MemoryHint<'_>> = memory_entries
+        .iter()
+        .map(|e| pf_llm::MemoryHint {
+            label: &e.label,
+            ops_summary: &e.ops_summary,
+            validation_profile: e.validation_profile.as_deref(),
+            total_replacements: e.total_replacements,
+        })
+        .collect();
+
     let result = core
         .with_workspace(&p.workspace_id, |_ws, st| {
             pf_llm::propose_patch(
@@ -692,6 +728,7 @@ fn handle_llm_propose_patch(core: &Core, params: Value) -> Result<Value, RpcErro
                     max_facts: p.max_facts,
                     max_tokens: 1024,
                     temperature: 0.0,
+                    memory_hints: hints,
                 },
             )
             .map_err(|e| RpcError::internal(e.to_string()))

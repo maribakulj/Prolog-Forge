@@ -974,6 +974,104 @@ def main() -> int:
         ), stats
         shutil.rmtree(scratch10_root, ignore_errors=True)
 
+        # ---- Phase 1.15: memory-biased llm.propose_patch. Apply an
+        # add_derive_to_struct first so the journal shows that op kind
+        # has landed, then ask for proposals *with* and *without*
+        # include_memory and assert the memory-aware run produces at
+        # least one extra candidate whose label is tagged
+        # [memory-biased].
+        scratch11_root = tempfile.mkdtemp(prefix="pf-smoke-memory-bias-")
+        scratch11_demo = os.path.join(scratch11_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch11_demo)
+        send(proc, {
+            "jsonrpc": "2.0", "id": 90, "method": "workspace.open",
+            "params": {"root": scratch11_demo},
+        })
+        ws_bias = recv(proc)["result"]["workspace_id"]
+        # Seed the journal with one add_derive_to_struct commit.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 91, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_bias,
+                "plan": {
+                    "ops": [{
+                        "op": "add_derive_to_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug"],
+                        "files": [],
+                    }],
+                    "label": "smoke: seed memory with add_derive",
+                },
+            },
+        })
+        seed_apply = recv(proc)["result"]
+        assert seed_apply["applied"] is True, seed_apply
+        # Index so the graph has function/struct facts.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 92, "method": "workspace.index",
+            "params": {"workspace_id": ws_bias},
+        })
+        recv(proc)
+        # Find a valid anchor.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 93, "method": "graph.query",
+            "params": {"workspace_id": ws_bias, "pattern": "struct_def(F, Counter)"},
+        })
+        struct_rows = recv(proc)["result"]["bindings"]
+        assert struct_rows, struct_rows
+        struct_anchor = struct_rows[0]["F"]
+
+        # Run #1: no memory.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 94, "method": "llm.propose_patch",
+            "params": {
+                "workspace_id": ws_bias,
+                "intent": "propose",
+                "anchor_id": struct_anchor,
+                "hops": 1,
+            },
+        })
+        no_mem = recv(proc)["result"]
+        assert not any(
+            "[memory-biased]" in c["plan"]["label"]
+            for c in no_mem["candidates"]
+        ), no_mem
+
+        # Run #2: include_memory=5. Must surface the biased candidate.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 95, "method": "llm.propose_patch",
+            "params": {
+                "workspace_id": ws_bias,
+                "intent": "propose",
+                "anchor_id": struct_anchor,
+                "hops": 1,
+                "include_memory": 5,
+            },
+        })
+        with_mem = recv(proc)["result"]
+        biased = [
+            c for c in with_mem["candidates"]
+            if "[memory-biased]" in c["plan"]["label"]
+        ]
+        assert biased, with_mem
+        # The biased candidate must be grounded (accepted) since
+        # Counter exists as a struct_def in the graph.
+        assert any(c["accepted"] for c in biased), biased
+        # Running the same request again must hit the cache.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 96, "method": "llm.propose_patch",
+            "params": {
+                "workspace_id": ws_bias,
+                "intent": "propose",
+                "anchor_id": struct_anchor,
+                "hops": 1,
+                "include_memory": 5,
+            },
+        })
+        with_mem2 = recv(proc)["result"]
+        assert with_mem2["cache_hit"] is True, with_mem2
+        shutil.rmtree(scratch11_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

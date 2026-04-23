@@ -34,12 +34,43 @@ impl PromptBuilder {
         }
     }
 
+    /// Memory-aware patch proposer. Identical response schema as v1
+    /// but the user template carries a `Prior successes:` section so
+    /// the model can condition on what has already landed on this
+    /// repo. Callers build this variant via [`build_with_memory`].
+    pub fn propose_patch_v2() -> Self {
+        Self {
+            system_template: SYSTEM_PROPOSE_PATCH_V2,
+            user_template: USER_PROPOSE_PATCH_V2,
+        }
+    }
+
     pub fn build(&self, intent: &str, facts: &[Fact]) -> (String, String) {
         let context = render_facts(facts);
         let user = self
             .user_template
             .replace("{{intent}}", intent)
             .replace("{{context}}", &context);
+        (self.system_template.to_string(), user)
+    }
+
+    /// Build a memory-aware `patch_propose.v2` prompt. `memory_hints`
+    /// is rendered verbatim into a `Prior successes:` block so the
+    /// model (and any mock or real provider) can condition its
+    /// proposals on what has already landed here.
+    pub fn build_with_memory(
+        &self,
+        intent: &str,
+        facts: &[Fact],
+        memory_hints: &[crate::propose_patch::MemoryHint<'_>],
+    ) -> (String, String) {
+        let context = render_facts(facts);
+        let memory = render_memory(memory_hints);
+        let user = self
+            .user_template
+            .replace("{{intent}}", intent)
+            .replace("{{context}}", &context)
+            .replace("{{memory}}", &memory);
         (self.system_template.to_string(), user)
     }
 
@@ -107,6 +138,26 @@ fn render_rejections(lines: &[RejectionLine<'_>]) -> String {
     out
 }
 
+fn render_memory(hints: &[crate::propose_patch::MemoryHint<'_>]) -> String {
+    if hints.is_empty() {
+        return "(none)\n".into();
+    }
+    let mut out = String::new();
+    for h in hints {
+        let ops = if h.ops_summary.is_empty() {
+            "(unknown)".to_string()
+        } else {
+            h.ops_summary.join(",")
+        };
+        let profile = h.validation_profile.unwrap_or("default");
+        out.push_str(&format!(
+            "- ops=[{ops}] profile={profile} replacements={} label={}\n",
+            h.total_replacements, h.label,
+        ));
+    }
+    out
+}
+
 fn render_diagnostics(lines: &[DiagnosticLine<'_>]) -> String {
     if lines.is_empty() {
         return "(none)\n".into();
@@ -159,6 +210,19 @@ justification: string } ] }.";
 
 const USER_PROPOSE_PATCH: &str = "Intent: {{intent}}\n\n\
 Context (observed facts):\n{{context}}\n\
+Respond with JSON only, no prose.";
+
+const SYSTEM_PROPOSE_PATCH_V2: &str = "You are a static-analysis *patch proposer* attached to the \
+Prolog Forge neuro-symbolic runtime. Given an intent, a set of observed facts about a \
+codebase, and a summary of previously-landed patches on this repository, you return typed \
+patch plans biased toward shapes that have historically succeeded here. Bounded by the same \
+strict op vocabulary as the v1 proposer; hallucinating identifiers that do not appear in the \
+context is still rejected downstream. Same output schema: { candidates: [ { plan: { ops: \
+[...], label: string }, justification: string } ] }.";
+
+const USER_PROPOSE_PATCH_V2: &str = "Intent: {{intent}}\n\n\
+Context (observed facts):\n{{context}}\n\
+Prior successes (past commits on this repo — prefer shapes that have already worked):\n{{memory}}\n\
 Respond with JSON only, no prose.";
 
 #[cfg(test)]

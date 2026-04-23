@@ -1,6 +1,6 @@
 # Protocol — Prolog Forge Core
 
-**Version:** `0.12.0` (Phase 1 step 14, pre-stable).
+**Version:** `0.13.0` (Phase 1 step 15, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -46,7 +46,7 @@ server-driven from that list.
 | `rules.evaluate` | Run the rule engine to fixpoint; returns `{derived, iterations}`. |
 | `llm.propose` | Ask the bounded LLM orchestrator for candidate facts anchored at an entity; every proposal is identifier-resolved against the graph before insertion at the `candidate` layer. |
 | `llm.refine` | Iterative revision loop. Accepts prior rejections and validator diagnostics, runs up to `max_rounds` of `refine.v1` prompts, and returns every candidate tagged with its round. Converges early when a round produces zero rejections. |
-| `llm.propose_patch` | Ask the LLM orchestrator for *typed patch plans* rather than fact candidates. Each candidate is an `ops + label` plan in the same wire shape `patch.preview` / `patch.apply` / `explain.patch` accept. Every op is identifier-grounded against the graph and rejected with a structured reason on hallucination. Closes the LLM → symbolic loop end-to-end: no translation step between proposal and validation. |
+| `llm.propose_patch` | Ask the LLM orchestrator for *typed patch plans* rather than fact candidates. Each candidate is an `ops + label` plan in the same wire shape `patch.preview` / `patch.apply` / `explain.patch` accept. Every op is identifier-grounded against the graph and rejected with a structured reason on hallucination. Closes the LLM → symbolic loop end-to-end: no translation step between proposal and validation. Optional `include_memory: N` field: the orchestrator fetches the top-N recent commits from `memory.history` and feeds them to the model as a `Prior successes` block, switching to the `patch_propose.v2` prompt schema (separate cache bucket from pure runs). |
 | `patch.preview` | Simulate a typed patch plan against the workspace's source files. Returns a unified diff per changed file plus replacement counts. Does not touch the filesystem. |
 | `patch.apply` | Validate the plan (pluggable stage pipeline selected by `validation_profile` — see below) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
 | `patch.rollback` | Undo a previously applied commit by id. Preflight-checks that the on-disk content still matches what was written at commit time, then atomically restores the pre-commit bytes from the journal. |

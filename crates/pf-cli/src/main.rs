@@ -204,6 +204,13 @@ enum Cmd {
         /// candidate (`default` | `typed` | `tested`).
         #[arg(long, default_value = "default")]
         profile: String,
+        /// Phase 1.15: feed the orchestrator the N most recent
+        /// commits from this repo's journal so proposals can be
+        /// biased toward shapes that have historically succeeded
+        /// here. `0` (default) disables memory and reuses the v1
+        /// prompt path.
+        #[arg(long, default_value = "0")]
+        include_memory: usize,
     },
     /// Add one or more derives to a struct / enum / union. Merges into
     /// any existing `#[derive(...)]` on the target, skipping duplicates;
@@ -271,7 +278,8 @@ fn main() -> Result<()> {
             intent,
             hops,
             profile,
-        } => cmd_propose_patch(root, anchor, intent, hops, profile),
+            include_memory,
+        } => cmd_propose_patch(root, anchor, intent, hops, profile, include_memory),
         Cmd::AddDerive {
             root,
             type_name,
@@ -697,6 +705,7 @@ fn cmd_propose_patch(
     intent: String,
     hops: usize,
     profile: String,
+    include_memory: usize,
 ) -> Result<()> {
     let core = Core::new();
     let resp = call(
@@ -725,6 +734,11 @@ fn cmd_propose_patch(
             anchor_id: anchor,
             hops,
             max_facts: 256,
+            include_memory: if include_memory > 0 {
+                Some(include_memory)
+            } else {
+                None
+            },
         })?,
     )?;
     let r: LlmProposePatchResult = serde_json::from_value(resp)?;

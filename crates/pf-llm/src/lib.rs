@@ -31,7 +31,7 @@ pub use context::ContextSelector;
 pub use prompt::PromptBuilder;
 pub use propose::{propose, ProposalOutcome, ProposeRequest, ProposeResult};
 pub use propose_patch::{
-    propose_patch, PatchCandidate, PlanShape, ProposePatchRequest, ProposePatchResult,
+    propose_patch, MemoryHint, PatchCandidate, PlanShape, ProposePatchRequest, ProposePatchResult,
 };
 pub use provider::{LlmError, LlmProvider, LlmRequest, LlmResponse, MockProvider};
 pub use refine::{refine, RefineRequest, RefineResult, RefinerDiagnostic, RoundSummary};

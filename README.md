@@ -11,22 +11,19 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 14** — repo memory surface. The commit
-> journal is now queryable from the outside: `memory.history` lists
-> every applied patch newest-first with op tags, validation
-> profile, replacement count and files-changed count; `memory.get`
-> fetches a single commit's full before/after bytes;
-> `memory.stats` aggregates by op kind, by profile, and by
-> most-edited files. The journal itself grew three
-> backwards-compatible fields (`ops_summary`, `validation_profile`,
-> `total_replacements`) so the stats don't need to re-parse labels
-> or re-walk plans. `pf history` / `pf show` / `pf stats` CLI
-> subcommands chain it. This addresses the "il manque une mémoire
-> exploitable" critique point: the runtime now remembers what it
-> did on a repo, and its callers can ask. Learning from that
-> memory (promoting repeated candidates to `validated` facts,
-> conditioning LLM prompts on past successes) is a Phase 3 item;
-> the surface lands first. See [Roadmap](#roadmap).
+> Status: **Phase 1, step 15** — memory-biased LLM proposer. The
+> memory surface from 1.14 becomes *exploitable*, not just
+> queryable: `llm.propose_patch` gains an optional
+> `include_memory: N` field that pulls the top-N recent commits
+> from `memory.history` and feeds them into a `Prior successes:`
+> prompt block (`patch_propose.v2` schema, separate cache bucket
+> from pure runs). The MockProvider reacts to the block by
+> surfacing extra candidates biased toward op kinds that have
+> historically landed here — a concrete demonstration of the
+> channel end-to-end. `pf propose-patch --include-memory N` wires
+> it on the CLI. Closes the gap between "the runtime remembers"
+> and "the runtime uses what it remembers". See
+> [Roadmap](#roadmap).
 
 ---
 
@@ -479,7 +476,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.12** | First non-rename op: `PatchOp::AddDeriveToStruct`. Syn-based merge-or-insert of `#[derive(...)]` on struct/enum/union, idempotent, grounded by `struct_def`/`enum_def`/`union_def`/`type_def` facts. MockProvider emits `add_derive` candidates; `llm.propose_patch` validator recognises the op. `pf add-derive` CLI. | **shipped** |
 | **1.13** | Persistent rust-analyzer session pool: `pf-ra-client::Session` (tempdir + versioned `didChange` sync), `pf-core::RaSessionPool` keyed by workspace root, `pf-patch::TypedRenameResolver` trait + `OneShotResolver` fallback. Successive typed renames share one warm RA instead of paying the indexing cost each call. | **shipped** |
 | **1.14** | Repo memory surface: `memory.history` / `memory.get` / `memory.stats` methods, enriched `CommitEntry` (op tags, validation profile, replacement count), `pf history` / `pf show` / `pf stats` CLI. | **shipped** |
-| 1.15 (MVP rest) | Impacted-tests selection, VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), memory-driven LLM prompting | 2–3 months |
+| **1.15** | Memory-biased LLM proposer: `llm.propose_patch` `include_memory: N` field, `patch_propose.v2` prompt variant with `Prior successes:` block, `MemoryHint` plumbing through pf-core to the orchestrator, `pf propose-patch --include-memory N` CLI. | **shipped** |
+| 1.16 (MVP rest) | Impacted-tests selection, VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python) | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

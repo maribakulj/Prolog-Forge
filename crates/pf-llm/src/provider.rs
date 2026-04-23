@@ -62,6 +62,7 @@ impl LlmProvider for MockProvider {
             "propose.v1" => mock_propose(&req.user),
             "refine.v1" => mock_refine(&req.user),
             "patch_propose.v1" => mock_propose_patch(&req.user),
+            "patch_propose.v2" => mock_propose_patch_v2(&req.user),
             _ => r#"{"candidates":[]}"#.to_string(),
         };
         Ok(LlmResponse {
@@ -178,6 +179,93 @@ fn mock_propose_patch(user: &str) -> String {
         "justification": "intentional hallucination to exercise the op-resolution guard",
     }));
     serde_json::json!({ "candidates": candidates }).to_string()
+}
+
+/// Memory-aware variant of [`mock_propose_patch`]. Reads the
+/// `Prior successes:` block from the rendered prompt to spot the op
+/// kinds that have already landed on this repo, and biases its
+/// proposals accordingly. The contract is the same: it still emits
+/// one rename per function in the context plus one hallucinated name
+/// so the grounding guard is exercised; when the memory shows
+/// `add_derive_to_struct` has succeeded before, it *additionally*
+/// emits an extra grounded `add_derive_to_struct` proposal even when
+/// the context is thin on structs — the point is to show the runtime
+/// learning from its own history.
+fn mock_propose_patch_v2(user: &str) -> String {
+    let base_json = mock_propose_patch(user);
+    let prior_tags = extract_memory_op_tags(user);
+    if !prior_tags.iter().any(|t| t == "add_derive_to_struct") {
+        return base_json;
+    }
+    // Re-decode + tack on a memory-biased extra candidate for any
+    // struct_def in the context. If there are none the v1 mock
+    // already emits nothing for the struct path; we preserve that
+    // silence (no bias = no candidate).
+    let mut parsed: serde_json::Value = match serde_json::from_str(&base_json) {
+        Ok(v) => v,
+        Err(_) => return base_json,
+    };
+    let mut extra: Vec<serde_json::Value> = Vec::new();
+    for (_id, type_name) in context_types(user) {
+        extra.push(serde_json::json!({
+            "plan": {
+                "ops": [{
+                    "op": "add_derive_to_struct",
+                    "type_name": type_name,
+                    "derives": ["PartialEq"],
+                    "files": [],
+                }],
+                "label": format!("[memory-biased] add PartialEq to {type_name}"),
+            },
+            "justification": format!(
+                "history on this repo shows add_derive_to_struct landing before; \
+                 extending {type_name} to include PartialEq is a good follow-up"
+            ),
+        }));
+    }
+    if extra.is_empty() {
+        return base_json;
+    }
+    if let Some(arr) = parsed.get_mut("candidates").and_then(|v| v.as_array_mut()) {
+        arr.extend(extra);
+    }
+    parsed.to_string()
+}
+
+/// Extract the `ops=[tag1,tag2,...]` slices from a rendered
+/// `Prior successes:` block. Used by [`mock_propose_patch_v2`] to
+/// decide which op kinds to bias toward.
+fn extract_memory_op_tags(user: &str) -> Vec<String> {
+    let mut in_block = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in user.lines() {
+        let t = line.trim();
+        if t.starts_with("Prior successes") {
+            in_block = true;
+            continue;
+        }
+        if t.starts_with("Respond with JSON") {
+            in_block = false;
+        }
+        if !in_block {
+            continue;
+        }
+        // `- ops=[rename_function] profile=...` → capture between [ and ].
+        let Some(start) = t.find("ops=[") else {
+            continue;
+        };
+        let rest = &t[start + "ops=[".len()..];
+        let Some(end) = rest.find(']') else {
+            continue;
+        };
+        for tag in rest[..end].split(',') {
+            let tag = tag.trim();
+            if !tag.is_empty() {
+                out.push(tag.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Scan the rendered context for `struct_def(<id>, <name>).` /

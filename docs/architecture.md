@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 14 (repo memory surface)
+## Current state — Phase 1 step 15 (memory-biased LLM proposer)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -20,7 +20,7 @@ JSON-RPC.
 | `pf-persist` | KV trait + in-memory backend. Disk-backed store lands in Phase 1 step 2. |
 | `pf-ingest` | Filesystem walker, source-file dispatch. |
 | `pf-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
-| `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only, deterministic ordering), prompt builder, content-addressed response cache, identifier-resolution guard. Three LLM modes: `propose` (fact candidates), `refine` (iterative revision with prior rejections + diagnostics), and `propose_patch` (typed `PatchPlan` candidates grounded against the op vocabulary). |
+| `pf-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only, deterministic ordering), prompt builder, content-addressed response cache, identifier-resolution guard. Three LLM modes: `propose` (fact candidates), `refine` (iterative revision with prior rejections + diagnostics), and `propose_patch` (typed `PatchPlan` candidates grounded against the op vocabulary; Phase 1.15 adds an optional memory-aware variant that conditions proposals on past commits via a `patch_propose.v2` prompt). |
 | `pf-patch` | Typed patch planner. Op vocabulary: `RenameFunction` (macro-aware, Phase 1.10), `RenameFunctionTyped` (scope-resolved via rust-analyzer, Phase 1.11), `AddDeriveToStruct` (merge-or-insert `#[derive(...)]` on struct/enum/union, Phase 1.12). `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
 | `pf-ra-client` | Minimal LSP client for rust-analyzer: Content-Length framing, `Client` (one-shot spawn / initialize / rename / shutdown), `Session` (persistent tempdir + version-tracked `didChange` sync across calls), in-process mock server for tests. Graceful degradation when RA is absent — the caller receives `ClientError::NotAvailable` and falls back to the syntactic path. |
 | `pf-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. Semantic stages (`RuleStage`, `CargoCheckStage`, `CargoTestStage`) live in `pf-core` where the dependencies they need are available. |

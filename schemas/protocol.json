@@ -369,7 +369,8 @@
           "intent": { "type": "string" },
           "anchor_id": { "type": "string" },
           "hops": { "type": "integer", "minimum": 0, "default": 1 },
-          "max_facts": { "type": "integer", "minimum": 1, "default": 256 }
+          "max_facts": { "type": "integer", "minimum": 1, "default": 256 },
+          "include_memory": { "type": ["integer", "null"], "minimum": 0 }
         }
       },
       "result": {

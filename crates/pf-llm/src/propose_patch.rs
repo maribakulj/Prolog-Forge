@@ -31,6 +31,27 @@ pub struct ProposePatchRequest<'a> {
     pub max_facts: usize,
     pub max_tokens: u32,
     pub temperature: f32,
+    /// Snapshot of relevant past commits the caller wants the model
+    /// to condition on. Empty means "pure" proposal (same prompt shape
+    /// as the v1 mode from Phase 1.9). When non-empty the prompt
+    /// switches to `patch_propose.v2` — which additionally renders a
+    /// `Prior successes:` block — so the cache key naturally
+    /// distinguishes the two modes. Callers populate this from
+    /// `memory.history` when `include_memory` is set on the wire.
+    pub memory_hints: Vec<MemoryHint<'a>>,
+}
+
+/// Minimal shape of a past commit the proposer cares about. Kept
+/// narrow on purpose: the LLM should learn from *what kind of work
+/// landed here*, not from the actual bytes. Full history is still
+/// available via `memory.get` if a higher-powered future proposer
+/// wants it.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryHint<'a> {
+    pub label: &'a str,
+    pub ops_summary: &'a [String],
+    pub validation_profile: Option<&'a str>,
+    pub total_replacements: usize,
 }
 
 /// A single proposed plan with its justification and acceptance verdict.
@@ -79,12 +100,27 @@ pub fn propose_patch(
     // 1. Context — same trusted-layer view the fact proposer sees.
     let facts = ContextSelector::new(graph, req.max_facts).k_hop(req.anchor_id, req.hops);
 
-    // 2. Prompt + request.
-    let (system, user) = PromptBuilder::propose_patch_v1().build(req.intent, &facts);
+    // 2. Prompt + request. When the caller passes memory hints we
+    // switch to `patch_propose.v2` — identical schema shape, but the
+    // rendered user-prompt carries a `Prior successes:` block. The
+    // distinct `schema_id` also lets the response cache separate
+    // memory-aware runs from pure ones (otherwise a first no-memory
+    // call would poison the cache for later memory-aware calls).
+    let (system, user, schema_id) = if req.memory_hints.is_empty() {
+        let (s, u) = PromptBuilder::propose_patch_v1().build(req.intent, &facts);
+        (s, u, "patch_propose.v1".to_string())
+    } else {
+        let (s, u) = PromptBuilder::propose_patch_v2().build_with_memory(
+            req.intent,
+            &facts,
+            &req.memory_hints,
+        );
+        (s, u, "patch_propose.v2".to_string())
+    };
     let lreq = LlmRequest {
         system,
         user,
-        schema_id: "patch_propose.v1".into(),
+        schema_id,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
     };
@@ -339,6 +375,7 @@ mod tests {
                 max_facts: 100,
                 max_tokens: 1024,
                 temperature: 0.0,
+                memory_hints: Vec::new(),
             },
         )
         .unwrap();
@@ -377,6 +414,7 @@ mod tests {
             max_facts: 100,
             max_tokens: 1024,
             temperature: 0.0,
+            memory_hints: Vec::new(),
         };
         let r1 = propose_patch(&provider, &cache, &g, mk()).unwrap();
         assert!(!r1.cache_hit);
@@ -437,5 +475,92 @@ mod tests {
         let err = validate_plan(&plan, &funcs, &types).unwrap_err();
         assert!(err.contains("unknown type"), "{err}");
         assert!(err.contains("hallucination"), "{err}");
+    }
+
+    /// Phase 1.15: with an empty memory list, `propose_patch` uses
+    /// the v1 prompt path. With a non-empty memory that mentions
+    /// `add_derive_to_struct` as a prior success, the v2 mock
+    /// additionally emits an `add_derive_to_struct` candidate
+    /// biased by the history. Proves the memory-aware channel plumbs
+    /// end-to-end through the orchestrator, the prompt builder, and
+    /// the mock — without any RA or real LLM dependency.
+    #[test]
+    fn memory_biased_run_emits_extra_grounded_add_derive() {
+        let mut g = GraphStore::new();
+        seed(&mut g);
+        // Seed a struct_def so the memory-biased candidate has a
+        // grounding target. Without it the mock's v2 add_derive path
+        // is silent (no struct in context → no bias).
+        g.insert(pf_graph::Fact {
+            predicate: "struct_def".into(),
+            args: vec!["id_counter".into(), "Counter".into()],
+            layer: pf_protocol::FactLayer::Observed,
+        })
+        .unwrap();
+        let cache = ResponseCache::new();
+        let provider = MockProvider;
+
+        // Run #1: empty memory → v1 path. No add_derive candidate
+        // with the memory-biased label.
+        let r1 = propose_patch(
+            &provider,
+            &cache,
+            &g,
+            ProposePatchRequest {
+                intent: "propose",
+                anchor_id: "id_counter",
+                hops: 1,
+                max_facts: 100,
+                max_tokens: 1024,
+                temperature: 0.0,
+                memory_hints: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(!r1
+            .candidates
+            .iter()
+            .any(|c| c.plan.label.contains("[memory-biased]")));
+
+        // Run #2: memory shows `add_derive_to_struct` has landed
+        // before → v2 path. Must include the memory-biased candidate
+        // on top of the base proposals.
+        let ops = vec!["add_derive_to_struct".to_string()];
+        let r2 = propose_patch(
+            &provider,
+            &cache,
+            &g,
+            ProposePatchRequest {
+                intent: "propose",
+                anchor_id: "id_counter",
+                hops: 1,
+                max_facts: 100,
+                max_tokens: 1024,
+                temperature: 0.0,
+                memory_hints: vec![MemoryHint {
+                    label: "add derive(Debug, Clone) to Counter",
+                    ops_summary: &ops,
+                    validation_profile: Some("default"),
+                    total_replacements: 1,
+                }],
+            },
+        )
+        .unwrap();
+        let biased: Vec<&PatchCandidate> = r2
+            .candidates
+            .iter()
+            .filter(|c| c.plan.label.contains("[memory-biased]"))
+            .collect();
+        assert!(
+            !biased.is_empty(),
+            "expected a memory-biased candidate, got {:?}",
+            r2.candidates
+                .iter()
+                .map(|c| &c.plan.label)
+                .collect::<Vec<_>>()
+        );
+        // The biased candidate must also be grounded (accepted) — the
+        // validator sees `Counter` in the graph.
+        assert!(biased.iter().any(|c| c.accepted), "bias must resolve");
     }
 }

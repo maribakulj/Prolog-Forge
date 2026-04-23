@@ -259,6 +259,15 @@ pub struct LlmProposePatchParams {
     pub hops: usize,
     #[serde(default = "default_max_facts")]
     pub max_facts: usize,
+    /// If set, the orchestrator fetches the top-N most recent commits
+    /// from `memory.history` and feeds them to the LLM as a
+    /// `Prior successes:` block. `Some(0)` is equivalent to not
+    /// setting the field — no memory context. Leaves the cache story
+    /// clean: memory-aware runs use a different prompt schema id
+    /// (`patch_propose.v2`) so they don't collide with pure runs in
+    /// the response cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_memory: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
