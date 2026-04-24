@@ -1,16 +1,18 @@
-# Prolog Forge — VS Code adapter (minimal)
+# Prolog Forge — VS Code adapter
 
 A thin VS Code client for the `pf-daemon` JSON-RPC server. Speaks the
 same protocol the CLI speaks; doesn't bundle the daemon.
 
 ## What's here
 
-Four commands, all namespaced under **Prolog Forge** in the command
+Six commands, all namespaced under **Prolog Forge** in the command
 palette (`Cmd/Ctrl+Shift+P`):
 
 | Command | What it does |
 |---|---|
 | **Rename Function** | Prompts for old/new name, shows the `patch.preview` diff in the output channel, asks for confirmation, runs `patch.apply` — transactional with full validation gate. |
+| **Propose Patch (LLM)** | Quick-picks an anchor function from the graph, asks for an intent (free text) and a memory depth, calls `llm.propose_patch`, then for each accepted candidate offers **Explain** (proof-carrying `explain.patch`) or **Apply** (preview → confirm → validated apply) — with a chosen validation profile (`default` / `typed` / `tested`). Phase 1.20. |
+| **Explain Rename** | Dry-run of a rename through `explain.patch`: picks a profile, runs the explainer against the plan (no file writes), prints the three-state verdict (`accepted` / `rejected` / `not_proven`) with evidence counts and summary. Phase 1.20. |
 | **Show History** | `memory.history` → per-commit metadata (op tags, profile, file count) newest-first. |
 | **Show Stats** | `memory.stats` → aggregates by op kind, by validation profile, top-N edited files. |
 | **Daemon Info** | `session.initialize` — protocol version + list of methods the current daemon advertises. Handy for confirming the adapter is talking to the daemon you expect. |
@@ -19,6 +21,12 @@ All output lands in the **Prolog Forge** output channel (View →
 Output → select "Prolog Forge"). Diagnostics from `patch.apply`
 validation failures are surfaced verbatim so a rejected rename
 explains itself.
+
+On activation the extension opens the first workspace folder
+(`workspace.open`) **and** runs `workspace.index` once so the LLM /
+explain commands can discover function entities through `graph.query`
+without a user-visible round-trip. Index failures don't block the
+byte-level ops (rename, etc.) which don't need the graph.
 
 ## Install (development mode)
 
@@ -67,10 +75,11 @@ doesn't require any adapter change beyond exposing them as commands.
 - No streaming output: `patch.preview` and `cargo test` results
   come back all at once at the end of the RPC. The daemon's own
   `$/progress` surface is reserved for a future phase.
-- No LLM-driven commands yet (`llm.propose` / `llm.refine` /
-  `llm.propose_patch` are on the daemon but not surfaced in the
-  extension): the shape needs a dedicated UI (webview or quick-pick
-  flow) more than it needs a raw RPC wrapper. Phase 1.20+.
+- LLM orchestrator surface exposed: `llm.propose_patch` (Phase 1.20
+  **Propose Patch**) and `explain.patch` (both **Propose Patch** and
+  **Explain Rename**). `llm.refine`'s iterative dialogue has no
+  dedicated command yet — it needs a multi-round UI which is a
+  follow-up.
 
 ## Troubleshooting
 

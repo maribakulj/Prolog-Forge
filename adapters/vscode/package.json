@@ -26,6 +26,14 @@
         "title": "Prolog Forge: Rename Function"
       },
       {
+        "command": "prologForge.proposePatch",
+        "title": "Prolog Forge: Propose Patch (LLM)"
+      },
+      {
+        "command": "prologForge.explainRename",
+        "title": "Prolog Forge: Explain Rename"
+      },
+      {
         "command": "prologForge.showHistory",
         "title": "Prolog Forge: Show History"
       },
