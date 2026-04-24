@@ -11,18 +11,21 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 18** — patch algebra expansion:
-> `PatchOp::RemoveDeriveFromStruct`, the symmetric dual of the
-> Phase 1.12 `AddDeriveToStruct`. Filters the listed traits out of
-> the target type's first `#[derive(...)]` attribute; if the
-> filter empties the list entirely, the whole attribute line
-> (including its indentation and trailing newline) is stripped so
-> the source never carries a `#[derive()]` stub. A unit test
-> proves the round-trip: `add → remove` returns the file to
-> byte-identical pre-edit state. Same `llm.propose_patch`
-> grounding rules as the add-op (type_name must resolve against
-> `struct_def` / `enum_def` / `union_def` / `type_def` facts).
-> New `pf remove-derive` CLI subcommand mirrors `pf add-derive`.
+> Status: **Phase 1, step 19** — VS Code adapter (minimal). First
+> non-CLI client of the JSON-RPC protocol. Pure JavaScript (no
+> `npm install` step); spawns `pf-daemon` over stdio with
+> LSP-style Content-Length framing, the same wire shape the
+> daemon smoke test and `pf-ra-client` use. Four commands:
+> **Rename Function** (preview + confirm + apply with full
+> validation gate), **Show History** / **Show Stats** (wraps
+> `memory.history` / `memory.stats`), and **Daemon Info**. All
+> output goes to a dedicated *Prolog Forge* output channel.
+> Verified end-to-end against a real daemon from Node
+> (`workspace.open` → `patch.preview` → `memory.stats` round-trip
+> on protocol 0.14.0). Installation is `code
+> --extensionDevelopmentPath=adapters/vscode` — nothing is
+> bundled or packaged; the thin-client story is that
+> **adapters don't need a build toolchain, only the binary**.
 > See [Roadmap](#roadmap).
 
 ---
@@ -107,7 +110,10 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`pf-cli`](crates/pf-cli) | Binary: reference adapter + CI tool (`pf`) |
 
 Adapters (VS Code, Emacs, Neovim, JetBrains, …) live in a separate
-`adapters/` tree, intentionally kept thin. They are not part of Phase 0.
+`adapters/` tree, intentionally kept thin. A minimal VS Code client
+shipped in Phase 1.19 — see [`adapters/vscode`](adapters/vscode) —
+and is the reference implementation of the protocol for any future
+editor integration.
 
 ---
 
@@ -480,7 +486,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.16** | Impacted-tests selection (direct): `pf-core::test_impact` scans the workspace with `syn` + macro-aware walker, returns `#[test]`-annotated fns whose body mentions any plan anchor. `CargoTestStage.with_selection(names)` feeds them to `cargo test` as a substring filter; empty selection falls back to full suite. First graph-driven runtime decision. | **shipped** |
 | **1.17** | Transitive test-impact: same module now builds a per-function ident catalog and walks it with a cycle-safe BFS, so `test_X → helper Y → anchor Z` is picked up (the `double_uses_add → double → add` case direct impact missed). Same wire shape; pure narrowing upgrade. | **shipped** |
 | **1.18** | `PatchOp::RemoveDeriveFromStruct`: dual of Phase 1.12's add-op. Filters listed derives; when the list empties, strips the whole `#[derive(...)]` attribute line. `add → remove` round-trips byte-for-byte. `pf remove-derive` CLI. | **shipped** |
-| 1.19 (MVP rest) | VS Code adapter minimal, more editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python) | 2–3 months |
+| **1.19** | VS Code adapter minimal: `adapters/vscode/` pure-JS extension (no `npm install` step), JSON-RPC client speaking the daemon's stdio protocol, four commands (Rename Function, Show History, Show Stats, Daemon Info). First non-CLI client of the protocol. | **shipped** |
+| 1.20 (MVP rest) | More editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python), LLM-driven VS Code commands (propose patch, explain) | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

@@ -1,0 +1,57 @@
+{
+  "name": "prolog-forge",
+  "displayName": "Prolog Forge",
+  "description": "Neuro-symbolic development runtime — editor-agnostic daemon client.",
+  "version": "0.0.1",
+  "publisher": "prolog-forge",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maribakulj/prolog-forge"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "prologForge.renameFunction",
+        "title": "Prolog Forge: Rename Function"
+      },
+      {
+        "command": "prologForge.showHistory",
+        "title": "Prolog Forge: Show History"
+      },
+      {
+        "command": "prologForge.showStats",
+        "title": "Prolog Forge: Show Stats"
+      },
+      {
+        "command": "prologForge.info",
+        "title": "Prolog Forge: Daemon Info"
+      }
+    ],
+    "configuration": {
+      "title": "Prolog Forge",
+      "properties": {
+        "prologForge.daemonPath": {
+          "type": "string",
+          "default": "pf-daemon",
+          "description": "Path to the pf-daemon binary. Defaults to the name on PATH; set an absolute path for a checked-out build, e.g. `<workspace>/target/debug/pf-daemon`."
+        },
+        "prologForge.requestTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "Per-request timeout for JSON-RPC calls against pf-daemon, in milliseconds."
+        }
+      }
+    }
+  }
+}
