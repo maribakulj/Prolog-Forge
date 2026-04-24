@@ -1072,6 +1072,116 @@ def main() -> int:
         assert with_mem2["cache_hit"] is True, with_mem2
         shutil.rmtree(scratch11_root, ignore_errors=True)
 
+        # ---- Phase 1.18: remove_derive_from_struct, dual of 1.12's
+        # add_derive_to_struct. Apply an add first, then remove every
+        # derive one by one; assert the final file is byte-identical
+        # to the pre-add state (full round-trip).
+        scratch12_root = tempfile.mkdtemp(prefix="pf-smoke-remove-derive-")
+        scratch12_demo = os.path.join(scratch12_root, "demo")
+        shutil.copytree("examples/rust-demo", scratch12_demo)
+        with open(os.path.join(scratch12_demo, "src/lib.rs")) as f:
+            original_src = f.read()
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 100, "method": "workspace.open",
+            "params": {"root": scratch12_demo},
+        })
+        ws_rd = recv(proc)["result"]["workspace_id"]
+
+        # Add `Debug, Clone` to Counter.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 101, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_rd,
+                "plan": {
+                    "ops": [{
+                        "op": "add_derive_to_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug", "Clone"],
+                        "files": [],
+                    }],
+                    "label": "smoke: add derive for dual test",
+                },
+            },
+        })
+        add_res = recv(proc)["result"]
+        assert add_res["applied"] is True, add_res
+        with open(os.path.join(scratch12_demo, "src/lib.rs")) as f:
+            assert "#[derive(Debug, Clone)]\npub struct Counter" in f.read(), "add failed"
+
+        # Remove `Clone` — partial removal, attr must survive.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 102, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_rd,
+                "plan": {
+                    "ops": [{
+                        "op": "remove_derive_from_struct",
+                        "type_name": "Counter",
+                        "derives": ["Clone"],
+                        "files": [],
+                    }],
+                    "label": "smoke: remove Clone",
+                },
+            },
+        })
+        rem1 = recv(proc)["result"]
+        assert rem1["applied"] is True, rem1
+        with open(os.path.join(scratch12_demo, "src/lib.rs")) as f:
+            after_partial = f.read()
+        assert "#[derive(Debug)]\npub struct Counter" in after_partial, after_partial
+        assert "Clone" not in after_partial.split("pub struct Counter")[0], after_partial
+
+        # Remove the last remaining derive (`Debug`) — the whole
+        # `#[derive(...)]` attribute line must vanish, leaving the
+        # file byte-identical to the pre-add original.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 103, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws_rd,
+                "plan": {
+                    "ops": [{
+                        "op": "remove_derive_from_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug"],
+                        "files": [],
+                    }],
+                    "label": "smoke: remove last derive (drops attr)",
+                },
+            },
+        })
+        rem2 = recv(proc)["result"]
+        assert rem2["applied"] is True, rem2
+        with open(os.path.join(scratch12_demo, "src/lib.rs")) as f:
+            after_full = f.read()
+        assert after_full == original_src, (
+            "remove-derive round-trip must restore bytes; "
+            f"len(after)={len(after_full)} len(original)={len(original_src)}"
+        )
+
+        # Idempotence: removing an already-absent derive is a no-op
+        # at the wire level (no files changed, `total_replacements=0`).
+        send(proc, {
+            "jsonrpc": "2.0", "id": 104, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws_rd,
+                "plan": {
+                    "ops": [{
+                        "op": "remove_derive_from_struct",
+                        "type_name": "Counter",
+                        "derives": ["Debug"],
+                        "files": [],
+                    }],
+                    "label": "smoke: idempotent remove",
+                },
+            },
+        })
+        idem = recv(proc)["result"]
+        assert idem["total_replacements"] == 0, idem
+        assert idem["files"] == [], idem
+
+        shutil.rmtree(scratch12_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

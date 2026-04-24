@@ -980,6 +980,7 @@ fn op_tag(op: &pf_patch::PatchOp) -> String {
         pf_patch::PatchOp::RenameFunction { .. } => "rename_function".into(),
         pf_patch::PatchOp::RenameFunctionTyped { .. } => "rename_function_typed".into(),
         pf_patch::PatchOp::AddDeriveToStruct { .. } => "add_derive_to_struct".into(),
+        pf_patch::PatchOp::RemoveDeriveFromStruct { .. } => "remove_derive_from_struct".into(),
     }
 }
 
@@ -1014,6 +1015,16 @@ fn anchors_from_ops(ops: &[pf_patch::PatchOp]) -> Vec<String> {
                 // anchors too: in a future phase a rule pack might
                 // emit `violation(X) :- has_derive(X, "Unsafe")` and
                 // the explainer needs to see those.
+                out.push(type_name.clone());
+                out.extend(derives.iter().cloned());
+            }
+            pf_patch::PatchOp::RemoveDeriveFromStruct {
+                type_name, derives, ..
+            } => {
+                // Symmetric to AddDeriveToStruct: same anchors, same
+                // explainer surface. A rule pack that asserts
+                // `violation(X) :- requires_derive(X, "Serialize")`
+                // will see its premise fact cited exactly the same way.
                 out.push(type_name.clone());
                 out.extend(derives.iter().cloned());
             }

@@ -344,6 +344,138 @@ fn linecol_to_byte(line_starts: &[usize], src: &str, line: usize, column: usize)
     Some(line_end)
 }
 
+// ============================================================
+// RemoveDeriveFromStruct (Phase 1.18)
+// ============================================================
+
+/// Dual of [`add_derive`]: drop the listed derives from the target
+/// type's first `#[derive(...)]` attribute. Returns
+/// `(new_source, removed_count)` where `removed_count` is the number
+/// of derives actually removed. Returns `Ok((source, 0))` when the
+/// target type is absent, has no derive attribute, or already lacks
+/// every listed derive (idempotent).
+///
+/// If the removal empties the derive list entirely, the whole
+/// `#[derive(...)]` attribute line is stripped — including the
+/// trailing newline — so the source never carries a meaningless
+/// `#[derive()]` stub. Unlisted derives on the target stay intact.
+pub fn remove_derive(
+    source: &str,
+    type_name: &str,
+    derives: &[String],
+) -> Result<(String, usize), String> {
+    if derives.is_empty() {
+        return Ok((source.to_string(), 0));
+    }
+    for d in derives {
+        if !is_valid_derive_path(d) {
+            return Err(format!("invalid derive path `{d}`"));
+        }
+    }
+    let file = syn::parse_file(source).map_err(|e| format!("pre-parse: {e}"))?;
+
+    let line_starts = line_starts(source);
+    let mut finder = Finder {
+        type_name,
+        target: None,
+        line_starts: &line_starts,
+        source,
+    };
+    finder.visit_file(&file);
+    let Some(target) = finder.target else {
+        return Ok((source.to_string(), 0));
+    };
+
+    // Only the `ExistingDerive` branch is actionable for removal —
+    // if the target has no `#[derive]`, there's nothing to strip.
+    let Target::ExistingDerive {
+        inner_range,
+        listed,
+    } = target
+    else {
+        return Ok((source.to_string(), 0));
+    };
+
+    let to_remove: Vec<&str> = derives.iter().map(|s| s.as_str()).collect();
+    let kept: Vec<String> = listed
+        .iter()
+        .filter(|e| !to_remove.iter().any(|r| same_derive(e, r)))
+        .cloned()
+        .collect();
+    let removed = listed.len().saturating_sub(kept.len());
+    if removed == 0 {
+        return Ok((source.to_string(), 0));
+    }
+
+    let mut out = source.to_string();
+    let (inner_start, inner_end) = inner_range;
+    if kept.is_empty() {
+        // The derive list is now empty. Strip the whole `#[derive(...)]`
+        // attribute, including the trailing newline if any, so the
+        // source doesn't end up with `#[derive()]` or a stranded blank
+        // line above the item.
+        let attr_range = attribute_full_range(source, inner_start, inner_end);
+        out.replace_range(attr_range.0..attr_range.1, "");
+    } else {
+        // Re-render the inner list, preserving the trailing whitespace
+        // that was already there so the attribute visually matches what
+        // a human would have typed.
+        let existing_text = &source[inner_start..inner_end];
+        let trimmed = existing_text.trim_end();
+        let trailing_ws = &existing_text[trimmed.len()..];
+        let new_inner = format!("{}{}", kept.join(", "), trailing_ws);
+        out.replace_range(inner_start..inner_end, &new_inner);
+    }
+
+    syn::parse_file(&out)
+        .map_err(|e| format!("post-parse: rewrite would produce invalid Rust: {e}"))?;
+    Ok((out, removed))
+}
+
+/// Expand `(inner_start, inner_end)` — the byte range *inside* the
+/// derive's parens — outward to cover the entire `#[derive(...)]\n`
+/// line so we can strip the attribute cleanly when it empties. The
+/// expansion walks back to the nearest preceding `#` and forward to
+/// the newline following the closing `)]`; the span also eats the
+/// line's leading whitespace (typical indentation) so we don't leave
+/// an awkward empty-indented line behind.
+fn attribute_full_range(source: &str, inner_start: usize, inner_end: usize) -> (usize, usize) {
+    let bytes = source.as_bytes();
+
+    // Walk back from `(` (one byte before inner_start) to `#`.
+    let mut start = inner_start.saturating_sub(1);
+    while start > 0 && bytes[start] != b'#' {
+        start -= 1;
+    }
+
+    // Also eat leading whitespace on that line — keeps the indent
+    // tidy after removal.
+    let mut line_start_scan = start;
+    while line_start_scan > 0 {
+        let b = bytes[line_start_scan - 1];
+        if b == b'\n' {
+            break;
+        }
+        if b == b' ' || b == b'\t' {
+            line_start_scan -= 1;
+        } else {
+            break;
+        }
+    }
+
+    // Forward: past `)` past `]`, then the newline if any.
+    let mut end = inner_end;
+    // Skip `)` and `]`.
+    while end < bytes.len() && bytes[end] != b'\n' {
+        end += 1;
+    }
+    if end < bytes.len() && bytes[end] == b'\n' {
+        end += 1;
+    }
+
+    (line_start_scan, end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +561,83 @@ mod tests {
         let (out, n) = add_derive(src, "S", &["serde::Serialize".into()]).unwrap();
         assert_eq!(n, 1);
         assert!(out.contains("#[derive(serde::Serialize)]"), "{out}");
+    }
+
+    // ============================================================
+    // remove_derive tests — dual of add_derive
+    // ============================================================
+
+    #[test]
+    fn removes_one_derive_keeping_others() {
+        let src = "#[derive(Debug, Clone, PartialEq)]\npub struct Counter { v: i32 }\n";
+        let (out, n) = remove_derive(src, "Counter", &["Clone".into()]).unwrap();
+        assert_eq!(n, 1);
+        assert!(out.contains("#[derive(Debug, PartialEq)]"), "{out}");
+        assert!(!out.contains("Clone"), "{out}");
+    }
+
+    #[test]
+    fn removing_last_derive_strips_attribute_line() {
+        let src = "#[derive(Debug)]\npub struct X { v: i32 }\n";
+        let (out, n) = remove_derive(src, "X", &["Debug".into()]).unwrap();
+        assert_eq!(n, 1);
+        // The whole `#[derive(Debug)]\n` line must be gone; the
+        // struct stays and the line-leading indent/newline is not
+        // stranded.
+        assert!(out.starts_with("pub struct X"), "{out}");
+    }
+
+    #[test]
+    fn removing_absent_derive_is_a_noop() {
+        let src = "#[derive(Debug)]\nstruct Y;\n";
+        let (out, n) = remove_derive(src, "Y", &["Clone".into()]).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn target_without_derive_attribute_is_a_noop() {
+        let src = "struct Z { v: i32 }\n";
+        let (out, n) = remove_derive(src, "Z", &["Debug".into()]).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn unknown_target_is_a_noop() {
+        let src = "#[derive(Debug)]\nstruct A;\n";
+        let (out, n) = remove_derive(src, "NotAType", &["Debug".into()]).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn removes_multiple_derives_in_one_call() {
+        let src = "#[derive(Debug, Clone, PartialEq, Eq)]\nstruct Multi { v: i32 }\n";
+        let (out, n) = remove_derive(src, "Multi", &["Clone".into(), "PartialEq".into()]).unwrap();
+        assert_eq!(n, 2);
+        assert!(out.contains("#[derive(Debug, Eq)]"), "{out}");
+    }
+
+    #[test]
+    fn indentation_preserved_when_stripping_attribute() {
+        let src = "mod inner {\n    #[derive(Debug)]\n    pub struct Inside { v: i32 }\n}\n";
+        let (out, n) = remove_derive(src, "Inside", &["Debug".into()]).unwrap();
+        assert_eq!(n, 1);
+        // The attribute line (including its `    ` indent) vanishes;
+        // the struct line keeps its own indentation.
+        assert!(out.contains("mod inner {\n    pub struct Inside"), "{out}");
+        assert!(!out.contains("#[derive"), "{out}");
+    }
+
+    #[test]
+    fn add_then_remove_round_trips_to_original() {
+        let src = "pub struct Round { v: i32 }\n";
+        let (after_add, _) = add_derive(src, "Round", &["Debug".into()]).unwrap();
+        assert!(after_add.contains("#[derive(Debug)]"));
+        let (after_remove, n) = remove_derive(&after_add, "Round", &["Debug".into()]).unwrap();
+        assert_eq!(n, 1);
+        // Full round-trip: back to the original bytes.
+        assert_eq!(after_remove, src);
     }
 }

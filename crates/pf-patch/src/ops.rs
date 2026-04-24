@@ -81,6 +81,25 @@ pub enum PatchOp {
         #[serde(default)]
         files: Vec<String>,
     },
+    /// Dual of [`AddDeriveToStruct`]: remove one or more trait names
+    /// from the target type's `#[derive(...)]` attribute. If every
+    /// listed derive is absent, the op is a no-op (idempotent — dual
+    /// of the add-op's duplicate-skip). If the filter empties the
+    /// derive list entirely, the whole `#[derive(...)]` attribute
+    /// line is deleted, trailing newline included, so the source
+    /// never grows a `#[derive()]` stub.
+    ///
+    /// Unlisted derives on the target are preserved verbatim;
+    /// multiple `#[derive]` attributes on the same item are tolerated
+    /// but only the first is edited (same conservative posture as the
+    /// add-op).
+    RemoveDeriveFromStruct {
+        type_name: String,
+        /// Trait names to drop. Whitespace-insensitive comparison.
+        derives: Vec<String>,
+        #[serde(default)]
+        files: Vec<String>,
+    },
 }
 
 /// A `PatchPlan` is an ordered sequence of ops plus auditable metadata.

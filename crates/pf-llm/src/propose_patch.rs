@@ -325,10 +325,49 @@ fn validate_plan(
                     ));
                 }
             }
+            "remove_derive_from_struct" => {
+                // Dual of `add_derive_to_struct`: same params, same
+                // grounding, same hallucination check. Keeping the
+                // validator logic symmetric makes it obvious the
+                // op-pair is meant as inverses.
+                let type_name = raw
+                    .get("type_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] remove_derive_from_struct missing `type_name` string")
+                    })?;
+                let derives = raw
+                    .get("derives")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] remove_derive_from_struct missing `derives` array")
+                    })?;
+                if derives.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] remove_derive_from_struct: `derives` must be non-empty"
+                    ));
+                }
+                for (j, d) in derives.iter().enumerate() {
+                    let s = d.as_str().ok_or_else(|| {
+                        format!("op[{idx}] remove_derive_from_struct: derives[{j}] is not a string")
+                    })?;
+                    if s.is_empty() {
+                        return Err(format!(
+                            "op[{idx}] remove_derive_from_struct: derives[{j}] is empty"
+                        ));
+                    }
+                }
+                if !known_type_names.contains(type_name) {
+                    return Err(format!(
+                        "op[{idx}] remove_derive_from_struct: unknown type `{type_name}` (hallucination)"
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
                     "op[{idx}] unknown op tag `{other}` (known: rename_function, \
-                     rename_function_typed, add_derive_to_struct)"
+                     rename_function_typed, add_derive_to_struct, \
+                     remove_derive_from_struct)"
                 ));
             }
         }
