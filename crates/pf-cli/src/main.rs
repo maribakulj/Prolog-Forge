@@ -249,6 +249,23 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Inline a free-standing function: substitute every bare call site
+    /// with the function's body (wrapped in a block that binds each
+    /// parameter to its argument) and then remove the function
+    /// definition. Refuses recursion, `return` in the body,
+    /// `async/const/unsafe`, generics, `self` receivers, macro-body
+    /// call sites, and any non-bare reference in scope (qualified
+    /// paths, `use` re-exports) that would dangle after removal.
+    InlineFunction {
+        /// Workspace root.
+        root: PathBuf,
+        /// Name of the function to inline.
+        #[arg(long = "function")]
+        function: String,
+        /// Actually write the patch to disk after validation.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Produce a proof-carrying explanation for a rename plan: which
     /// observed facts are cited, which rules fire on the shadow graph,
     /// which candidates were considered, which validation stages ran, and
@@ -309,6 +326,11 @@ fn main() -> Result<()> {
             derives,
             apply,
         } => cmd_remove_derive(root, type_name, derives, apply),
+        Cmd::InlineFunction {
+            root,
+            function,
+            apply,
+        } => cmd_inline_function(root, function, apply),
         Cmd::Explain {
             root,
             from,
@@ -981,6 +1003,88 @@ fn cmd_remove_derive(
 
     if !apply {
         return Ok(());
+    }
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_APPLY,
+        serde_json::to_value(PatchApplyParams {
+            workspace_id: ws,
+            plan,
+            validation_profile: None,
+        })?,
+    )?;
+    let result: PatchApplyResult = serde_json::from_value(resp)?;
+    println!();
+    if result.applied {
+        println!(
+            "applied: commit {} ({} file(s), {} bytes)",
+            result.commit_id.as_deref().unwrap_or("-"),
+            result.files_written,
+            result.bytes_written
+        );
+    } else {
+        println!(
+            "rejected: {}",
+            result.rejection_reason.as_deref().unwrap_or("unknown")
+        );
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn cmd_inline_function(root: PathBuf, function: String, apply: bool) -> Result<()> {
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let op = serde_json::json!({
+        "op": "inline_function",
+        "function": function,
+        "files": [],
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("inline function {function}"),
+    };
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_PREVIEW,
+        serde_json::to_value(PatchPreviewParams {
+            workspace_id: ws.clone(),
+            plan: plan.clone(),
+        })?,
+    )?;
+    let preview: PatchPreviewResult = serde_json::from_value(resp)?;
+    println!(
+        "preview: {} byte-level edit(s) across {} file(s)",
+        preview.total_replacements,
+        preview.files.len()
+    );
+    for e in &preview.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+    for f in &preview.files {
+        println!(
+            "\n# {} ({} bytes -> {} bytes, {} edit(s))",
+            f.path, f.before_len, f.after_len, f.replacements
+        );
+        println!("{}", f.diff);
+    }
+
+    if !apply {
+        return Ok(());
+    }
+    if !preview.errors.is_empty() {
+        println!("refusing to apply: preview reported errors");
+        std::process::exit(2);
     }
 
     let resp = call(

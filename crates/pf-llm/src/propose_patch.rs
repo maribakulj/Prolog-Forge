@@ -363,11 +363,36 @@ fn validate_plan(
                     ));
                 }
             }
+            "inline_function" => {
+                // First Phase-1.21 op. Grounding: the target function
+                // name must resolve to a known `function(_, name)` fact
+                // in the graph — same hallucination guard as
+                // `rename_function`. Full correctness (free-standing,
+                // non-recursive, no `return`, …) is checked by the
+                // patch planner; the LLM guard only enforces that the
+                // identifier is real.
+                let function = raw
+                    .get("function")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] inline_function missing `function` string")
+                    })?;
+                if function.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] inline_function: `function` must be non-empty"
+                    ));
+                }
+                if !known_function_names.contains(function) {
+                    return Err(format!(
+                        "op[{idx}] inline_function: unknown identifier `{function}` (hallucination)"
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
                     "op[{idx}] unknown op tag `{other}` (known: rename_function, \
                      rename_function_typed, add_derive_to_struct, \
-                     remove_derive_from_struct)"
+                     remove_derive_from_struct, inline_function)"
                 ));
             }
         }

@@ -11,21 +11,23 @@ inside that structured frame to plan, apply, and explain patches.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients** of
 the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 20** — LLM-driven VS Code commands.
-> The pure-JS adapter shipped in 1.19 now surfaces the
-> neuro-symbolic loop directly in the editor: **Propose Patch
-> (LLM)** quick-picks a function anchor, calls
-> `llm.propose_patch` with an optional memory hint, and offers
-> each accepted candidate as **Apply** (preview → confirm →
-> validated apply with chosen profile: `default` / `typed` /
-> `tested`) or **Explain** (`explain.patch` proof-carrying
-> verdict). **Explain Rename** is a pure dry-run of a rename
-> through the explainer. Activation now also runs
-> `workspace.index` once so `graph.query` resolves function
-> entities without a user-visible round-trip. Still no
-> build toolchain required (`code
-> --extensionDevelopmentPath=adapters/vscode`). See
-> [Roadmap](#roadmap).
+> Status: **Phase 1, step 21** — `InlineFunction` op. The
+> patch algebra grows beyond "modify-in-place" into
+> "replace-and-delete": substitute every bare call site of a
+> free-standing function with a paren-wrapped block that binds
+> each parameter to its argument, then remove the function
+> definition. Narrow by design — the transform refuses
+> recursion, `return` in the body, `async`/`const`/`unsafe`,
+> generics, `self`, macro-body calls, and any non-bare
+> reference in scope (qualified paths, `use` re-exports) that
+> would dangle after removal. Wire shape: new
+> `PatchOp::InlineFunction { function, files }` variant,
+> recognised by `patch.preview` / `patch.apply` /
+> `explain.patch` / `llm.propose_patch`. New `pf
+> inline-function` CLI subcommand. Journal records the
+> `inline_function` op tag (visible via `memory.stats
+> by_op_kind`). Daemon smoke now covers preview → apply →
+> idempotent re-run round-trip. See [Roadmap](#roadmap).
 
 ---
 
@@ -487,7 +489,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.18** | `PatchOp::RemoveDeriveFromStruct`: dual of Phase 1.12's add-op. Filters listed derives; when the list empties, strips the whole `#[derive(...)]` attribute line. `add → remove` round-trips byte-for-byte. `pf remove-derive` CLI. | **shipped** |
 | **1.19** | VS Code adapter minimal: `adapters/vscode/` pure-JS extension (no `npm install` step), JSON-RPC client speaking the daemon's stdio protocol, four commands (Rename Function, Show History, Show Stats, Daemon Info). First non-CLI client of the protocol. | **shipped** |
 | **1.20** | LLM-driven VS Code commands: **Propose Patch (LLM)** — function quick-pick → intent → memory-depth → `llm.propose_patch` → per-candidate **Apply** (preview + validated apply) or **Explain** (`explain.patch`) with a chosen profile (`default` / `typed` / `tested`). **Explain Rename** — `explain.patch` dry-run with full verdict + stats. Auto-`workspace.index` on activation so `graph.query` resolves function entities. Closes the editor ↔ neuro-symbolic loop end-to-end. | **shipped** |
-| 1.21 (MVP rest) | More editing ops (extract / inline / move / change-signature), multi-language analyzers (TS / Python), dedicated `llm.refine` UI (multi-round dialogue) | 2–3 months |
+| **1.21** | `PatchOp::InlineFunction` — first op that *deletes* code as well as rewriting it. Substitutes every bare call site `f(a1, a2)` with `({ let p1 = a1; let p2 = a2; <body_inner> })` (paren-wrap defeats the statement-disambiguation rule `{…} + 1 → {…}; +1`), then removes the fn definition. Narrow contract refuses recursion, `return`, `async`/`const`/`unsafe`, generics, `self`, macro-body call sites, and any non-bare reference in scope. `pf inline-function` CLI subcommand. MockProvider validator + `explain.patch` anchors wired; `memory.stats by_op_kind.inline_function` tracked. Shared span-arithmetic helpers extracted to `pf-patch::util`. | **shipped** |
+| 1.22 (MVP rest) | More editing ops (extract / move / change-signature), multi-language analyzers (TS / Python), dedicated `llm.refine` UI (multi-round dialogue) | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

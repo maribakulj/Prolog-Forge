@@ -100,6 +100,28 @@ pub enum PatchOp {
         #[serde(default)]
         files: Vec<String>,
     },
+    /// Substitute every call site of a free-standing function with the
+    /// function's body, wrapped in a block that binds every formal
+    /// parameter to its actual argument, and then remove the function
+    /// definition. First Phase-1.21 op; extends the patch algebra
+    /// beyond "modify-in-place" into "replace-and-delete".
+    ///
+    /// Deliberately narrow contract (see `crate::inline`): free-standing
+    /// fn, no `self`, no generics, no `async`/`const`/`unsafe`, no
+    /// `return` in body, non-recursive, not called inside any macro body
+    /// in scope. The transform refuses ambiguity rather than produce a
+    /// half-inlined program.
+    InlineFunction {
+        /// Name of the function to inline. Must resolve to exactly one
+        /// free-standing definition across `files` (or the whole
+        /// workspace if `files` is empty).
+        function: String,
+        /// If empty, the op runs on every `.rs` file in the preview
+        /// input. Otherwise it is restricted to paths whose
+        /// `relative` form matches one of the entries exactly.
+        #[serde(default)]
+        files: Vec<String>,
+    },
 }
 
 /// A `PatchPlan` is an ordered sequence of ops plus auditable metadata.

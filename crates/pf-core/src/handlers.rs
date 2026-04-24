@@ -981,6 +981,7 @@ fn op_tag(op: &pf_patch::PatchOp) -> String {
         pf_patch::PatchOp::RenameFunctionTyped { .. } => "rename_function_typed".into(),
         pf_patch::PatchOp::AddDeriveToStruct { .. } => "add_derive_to_struct".into(),
         pf_patch::PatchOp::RemoveDeriveFromStruct { .. } => "remove_derive_from_struct".into(),
+        pf_patch::PatchOp::InlineFunction { .. } => "inline_function".into(),
     }
 }
 
@@ -1027,6 +1028,12 @@ fn anchors_from_ops(ops: &[pf_patch::PatchOp]) -> Vec<String> {
                 // will see its premise fact cited exactly the same way.
                 out.push(type_name.clone());
                 out.extend(derives.iter().cloned());
+            }
+            pf_patch::PatchOp::InlineFunction { function, .. } => {
+                // The inlined function is the one and only anchor: the
+                // explainer surfaces `function(_, function)` and any
+                // `calls(_, <fn_id>)` relations citing it.
+                out.push(function.clone());
             }
         }
     }

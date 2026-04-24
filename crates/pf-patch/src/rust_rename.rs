@@ -27,6 +27,8 @@ use proc_macro2::{Ident, TokenStream, TokenTree};
 use syn::visit::Visit;
 use syn::Macro;
 
+use crate::util::{line_starts, linecol_to_byte};
+
 /// Rename every occurrence of `old_name` to `new_name` in a Rust source
 /// text. Returns `(new_source, count_of_replacements)`. Fails with an
 /// error message if either the original source or the rewritten source
@@ -146,52 +148,6 @@ impl<'a> Collector<'a> {
 /// scanned for renamable identifiers.
 fn is_macro_rules(m: &Macro) -> bool {
     m.path.is_ident("macro_rules")
-}
-
-fn line_starts(src: &str) -> Vec<usize> {
-    let mut v = vec![0usize];
-    for (i, b) in src.bytes().enumerate() {
-        if b == b'\n' {
-            v.push(i + 1);
-        }
-    }
-    v
-}
-
-/// `proc_macro2`'s `LineColumn::line` is 1-indexed; `column` is 0-indexed
-/// and counts **characters** on the line. For ASCII identifiers (all Rust
-/// names) char count == byte count; we fall back to a UTF-8 char walk when
-/// non-ASCII appears on the line.
-fn linecol_to_byte(line_starts: &[usize], src: &str, line: usize, column: usize) -> Option<usize> {
-    if line == 0 || line > line_starts.len() {
-        return None;
-    }
-    let line_start = line_starts[line - 1];
-    let line_end = line_starts.get(line).copied().unwrap_or(src.len());
-    let line_text = &src[line_start..line_end];
-    if line_text.is_ascii() {
-        return Some(line_start + column);
-    }
-    let mut offset = line_start;
-    for (i, _c) in line_text.char_indices() {
-        if i == 0 && column == 0 {
-            return Some(offset);
-        }
-        if i == 0 {
-            continue;
-        }
-        // `i` is the byte index of the current char within `line_text`; for
-        // `column == k` we want the start of the k-th char.
-        if count_chars_until(line_text, i) == column {
-            return Some(line_start + i);
-        }
-        offset = line_start + i;
-    }
-    Some(offset)
-}
-
-fn count_chars_until(s: &str, byte_idx: usize) -> usize {
-    s.char_indices().take_while(|(i, _)| *i < byte_idx).count()
 }
 
 fn is_valid_ident(s: &str) -> bool {

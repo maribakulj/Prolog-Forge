@@ -300,6 +300,25 @@ fn apply_op(
                 }
             }
         }
+        PatchOp::InlineFunction { function, files } => {
+            // Cross-file op: the transform takes the entire working map
+            // (it needs to locate the unique definition anywhere in
+            // scope) and returns both a new map and per-file counts.
+            match crate::inline::inline_function(working, function, files) {
+                Ok((new_files, per_file)) => {
+                    for (path, new_src) in new_files {
+                        working.insert(path, new_src);
+                    }
+                    for (path, n) in per_file {
+                        *replacements.entry(path).or_insert(0) += n;
+                    }
+                }
+                Err(msg) => errors.push(PreviewError {
+                    file: files.first().cloned().unwrap_or_default(),
+                    message: msg,
+                }),
+            }
+        }
     }
 }
 

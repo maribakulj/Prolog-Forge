@@ -1182,6 +1182,105 @@ def main() -> int:
 
         shutil.rmtree(scratch12_root, ignore_errors=True)
 
+        # ---- Phase 1.21: inline_function. Preview substitutes every bare
+        # call site of a pure single-body helper with its inlined form
+        # (block-wrapped with `let` prelude) and removes the definition.
+        # We use a scratch fixture with a small helper whose every call
+        # site is bare — rust-demo's real helpers are referenced from
+        # macro bodies (`assert_eq!(add(1,2), 3)`) which inline refuses.
+        scratch21_root = tempfile.mkdtemp(prefix="pf-smoke-inline-")
+        scratch21_demo = os.path.join(scratch21_root, "demo")
+        os.makedirs(os.path.join(scratch21_demo, "src"))
+        with open(os.path.join(scratch21_demo, "Cargo.toml"), "w") as f:
+            f.write("[package]\nname = \"pf-inline-smoke\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n")
+        inline_src = (
+            "pub fn sq(x: i32) -> i32 { x * x }\n"
+            "\n"
+            "pub fn sum_of_squares(a: i32, b: i32) -> i32 {\n"
+            "    sq(a) + sq(b)\n"
+            "}\n"
+        )
+        with open(os.path.join(scratch21_demo, "src/lib.rs"), "w") as f:
+            f.write(inline_src)
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 140, "method": "workspace.open",
+            "params": {"root": scratch21_demo},
+        })
+        r = recv(proc)
+        ws21 = r["result"]["workspace_id"]
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 141, "method": "workspace.index",
+            "params": {"workspace_id": ws21},
+        })
+        recv(proc)
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 142, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws21,
+                "plan": {
+                    "ops": [{"op": "inline_function", "function": "sq", "files": []}],
+                    "label": "smoke: inline sq",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        # 2 bare call sites + 1 definition removal = 3 byte-level edits.
+        assert r["total_replacements"] == 3, r
+        assert len(r["files"]) == 1, r
+        # Shape check: inlined form with paren-wrap + let prelude.
+        diff = r["files"][0]["diff"]
+        assert "({ let x = a; x * x })" in diff, diff
+        assert "({ let x = b; x * x })" in diff, diff
+        assert "-pub fn sq(x" in diff, diff
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 143, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws21,
+                "plan": {
+                    "ops": [{"op": "inline_function", "function": "sq", "files": []}],
+                    "label": "smoke: inline sq apply",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        assert r["applied"] is True, r
+        with open(os.path.join(scratch21_demo, "src/lib.rs")) as f:
+            applied_src = f.read()
+        assert "pub fn sq" not in applied_src, applied_src
+        assert "({ let x = a; x * x }) + ({ let x = b; x * x })" in applied_src, applied_src
+
+        # Re-apply the same plan — now that `sq` is gone, the op is a
+        # no-op and the preview should produce zero edits.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 144, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws21,
+                "plan": {
+                    "ops": [{"op": "inline_function", "function": "sq", "files": []}],
+                    "label": "smoke: inline sq idempotent",
+                },
+            },
+        })
+        idem = recv(proc)["result"]
+        assert idem["total_replacements"] == 0, idem
+        assert idem["files"] == [], idem
+
+        # Confirm memory.stats now records the `inline_function` op tag
+        # under by_op_kind — proves the journal + stats wire path for
+        # the new op kind is intact.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 145, "method": "memory.stats",
+            "params": {"workspace_id": ws21},
+        })
+        stats = recv(proc)["result"]
+        assert stats["by_op_kind"].get("inline_function", 0) >= 1, stats
+
+        shutil.rmtree(scratch21_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)
