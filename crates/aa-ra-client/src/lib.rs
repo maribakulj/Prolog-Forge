@@ -26,6 +26,7 @@
 
 pub mod framing;
 pub mod mock;
+pub mod retry;
 pub mod transport;
 pub mod types;
 
@@ -33,5 +34,9 @@ mod client;
 mod session;
 
 pub use client::{Client, ClientError, RenameRequest};
+pub use retry::{
+    retry_rename_at_until_indexed, retry_rename_until_indexed, retry_with, RetryAttempt,
+    RetryOutcome, DEFAULT_POLL_INTERVAL,
+};
 pub use session::Session;
 pub use types::{DocumentUri, Position, Range, TextEdit, WorkspaceEdit};

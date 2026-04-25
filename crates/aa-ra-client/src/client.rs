@@ -522,34 +522,33 @@ mod tests {
         let mut client = Client::spawn(root, Duration::from_secs(60)).expect("spawn rust-analyzer");
 
         // rust-analyzer needs to discover + index the workspace
-        // before it can resolve `add` to a symbol. Until indexing
-        // completes, rename calls either return `-32602 "No
-        // references found at position"` *or* `result: null` (LSP
-        // spec — the server is allowed to say "I cannot rename
-        // here"). There's no standard LSP notification we can wait
-        // on (`experimental/serverStatus` would, but it requires a
-        // matching experimental capability declaration on
-        // initialize, which we don't ship in production).
-        // `retry_rename_until_indexed` polls until either form goes
-        // away or the deadline hits. 180s is sized for a cold-cache
-        // GitHub runner where `cargo metadata` + proc-macro server
-        // warmup can take significantly longer than on a developer
-        // host with a warm `~/.cargo`.
-        let edit = retry_rename_until_indexed(
+        // before it can resolve `add` to a symbol. The four
+        // indexing-not-ready signals it can return are documented
+        // in `crate::retry`; both the test and the production
+        // callers (`OneShotResolver`, `Session::rename`) now share
+        // the same `retry_rename_until_indexed` helper. 180s is
+        // sized for a cold-cache GitHub runner where `cargo
+        // metadata` + proc-macro server warmup can take
+        // significantly longer than on a developer host with a
+        // warm `~/.cargo`.
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        let outcome = crate::retry::retry_rename_until_indexed(
             &mut client,
             &root.join("src/lib.rs"),
             0,
             7,
             "sum",
-            Duration::from_secs(180),
-        )
-        .expect("rename (after indexing)");
-        // Use `flatten()` rather than `edit.changes` directly:
-        // rust-analyzer 1.95+ ignores the `documentChanges: false`
-        // capability we declare and always returns its edits in the
-        // newer `documentChanges` envelope. The flatten helper merges
-        // both forms into the single `(uri -> edits)` map every
-        // downstream caller actually wants.
+            deadline,
+            crate::retry::DEFAULT_POLL_INTERVAL,
+        );
+        for a in &outcome.attempts {
+            eprintln!("attempt {}: {}", a.attempt, a.reason);
+        }
+        let edit = outcome.edit.expect("rename (after indexing)");
+        // `flatten()` merges `changes` and `documentChanges` —
+        // RA 1.95+ ignores our `documentChanges: false` capability
+        // and always returns the newer form, so reading `changes`
+        // directly would silently see no edits.
         let by_uri = edit.flatten();
         assert!(!by_uri.is_empty(), "RA returned no edits");
         let total: usize = by_uri.values().map(|v| v.len()).sum();
@@ -558,127 +557,5 @@ mod tests {
             "expected at least 2 edits (def + 1 caller), got {total}"
         );
         client.shutdown().ok();
-    }
-
-    /// Retry `Client::rename` until rust-analyzer has finished
-    /// indexing the workspace enough to resolve the symbol at
-    /// `(line, character)`. Used by the e2e test only — production
-    /// callers wrap the syntactic-fallback ladder around this and
-    /// don't poll.
-    ///
-    /// What counts as "indexing not ready yet" is anything but a
-    /// non-empty `WorkspaceEdit`. RA can signal a not-yet-indexed
-    /// state through *at least* four distinct LSP shapes (each one
-    /// observed at least once in CI as we tightened this test):
-    ///
-    ///   1. `LspError(-32602)` with `"No references found at position"`
-    ///      — invalid params, common on warm hosts.
-    ///   2. `Ok(WorkspaceEdit { ... })` with empty `flatten()` — RA
-    ///      returned `result: null`, normalised by `Client::rename`.
-    ///   3. `LspError(-32801)` `ContentModified` — RA invalidated the
-    ///      in-flight request because its internal state changed
-    ///      mid-handling (typical during initial indexing).
-    ///   4. `LspError(-32802)` `RequestCancelled` — RA cancelled the
-    ///      request itself for the same reason.
-    ///
-    /// Anything else (network error, IO error, an LSP error code we
-    /// don't know about) fails fast so a real bug doesn't get hidden
-    /// under retry timeout.
-    fn retry_rename_until_indexed(
-        client: &mut Client,
-        file: &std::path::Path,
-        line: u32,
-        character: u32,
-        new_name: &str,
-        timeout: Duration,
-    ) -> Result<crate::types::WorkspaceEdit, ClientError> {
-        let deadline = std::time::Instant::now() + timeout;
-        let mut attempts = 0u32;
-        loop {
-            attempts += 1;
-            let req = RenameRequest {
-                file,
-                line,
-                character,
-                new_name,
-            };
-            let result = client.rename(req);
-            let signal = classify_indexing_signal(&result);
-            match signal {
-                IndexingSignal::Ready => {
-                    eprintln!("rename succeeded on attempt {attempts}");
-                    return result;
-                }
-                IndexingSignal::NotReady(reason) => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(ClientError::LspError(format!(
-                            "indexing timeout after {attempts} attempts \
-                             (last reason: {reason}; last result: {result:?})"
-                        )));
-                    }
-                    std::thread::sleep(Duration::from_millis(500));
-                }
-                IndexingSignal::HardFailure => return result,
-            }
-        }
-    }
-
-    enum IndexingSignal {
-        /// The rename returned a non-empty edit set — done.
-        Ready,
-        /// A retryable signal that RA hasn't finished indexing.
-        /// Carries a short tag for the timeout diagnostic.
-        NotReady(&'static str),
-        /// Anything else — pass through to the caller without retry.
-        HardFailure,
-    }
-
-    /// LSP error codes RA emits while still warming up. Each of these
-    /// is documented in the LSP spec as "the server should retry"
-    /// territory; treating them as terminal would race the indexing
-    /// every time CI is slower than a dev host.
-    fn classify_indexing_signal(
-        result: &Result<crate::types::WorkspaceEdit, ClientError>,
-    ) -> IndexingSignal {
-        match result {
-            Ok(edit) => {
-                if edit.flatten().is_empty() {
-                    IndexingSignal::NotReady("empty WorkspaceEdit (likely result: null)")
-                } else {
-                    IndexingSignal::Ready
-                }
-            }
-            Err(ClientError::LspError(payload)) => {
-                // The payload is the JSON serialisation of `{ "code":
-                // <int>, "message": <str>, "data": ... }`. We read it
-                // structurally rather than substring-matching the
-                // human-readable text, which would drift across RA
-                // versions. Any code we don't recognise falls through
-                // to HardFailure so a genuine bug doesn't hide under
-                // the retry timeout.
-                let parsed: serde_json::Value =
-                    serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
-                let code = parsed.get("code").and_then(|v| v.as_i64());
-                let message = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                match code {
-                    // -32602 InvalidParams. RA uses this for "no
-                    // references at the requested position", which
-                    // before indexing always means "I haven't seen
-                    // that symbol yet".
-                    Some(-32602) if message.contains("No references found") => {
-                        IndexingSignal::NotReady("-32602 No references found")
-                    }
-                    // -32801 ContentModified — LSP-standard, "I gave
-                    // up on this request because my internal state
-                    // changed". Triggered by RA finishing a chunk of
-                    // indexing while the rename was in flight.
-                    Some(-32801) => IndexingSignal::NotReady("-32801 ContentModified"),
-                    // -32802 RequestCancelled — same family.
-                    Some(-32802) => IndexingSignal::NotReady("-32802 RequestCancelled"),
-                    _ => IndexingSignal::HardFailure,
-                }
-            }
-            Err(_) => IndexingSignal::HardFailure,
-        }
     }
 }

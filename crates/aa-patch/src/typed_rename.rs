@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use aa_ra_client::{Client, ClientError, DocumentUri, Range, RenameRequest, WorkspaceEdit};
+use aa_ra_client::{Client, ClientError, DocumentUri, Range, WorkspaceEdit};
 
 #[derive(Debug, Error)]
 pub enum TypedRenameError {
@@ -105,7 +105,16 @@ pub fn resolve(req: TypedRenameRequest<'_>) -> Result<BTreeMap<String, String>, 
         fs::write(&dest, content).map_err(|e| TypedRenameError::Io(e.to_string()))?;
     }
 
-    // 2. Spawn rust-analyzer and run the rename.
+    // 2. Spawn rust-analyzer and run the rename. Wrap the call in
+    //    `retry_rename_until_indexed` because every fresh `Client::spawn`
+    //    races RA's initial workspace-indexing pass — without retry,
+    //    the very first rename against a cold workspace fails with
+    //    one of four distinct LSP signals (see `aa_ra_client::retry`).
+    //    The retry helper polls until either an actual rename comes
+    //    back or `req.timeout` is exhausted; anything that isn't a
+    //    known indexing-not-ready signal short-circuits and surfaces
+    //    as `TypedRenameError::Client` so a real bug doesn't hide
+    //    under the timeout.
     let mut client = match Client::spawn(root, req.timeout) {
         Ok(c) => c,
         Err(ClientError::NotAvailable(msg)) => {
@@ -114,13 +123,18 @@ pub fn resolve(req: TypedRenameRequest<'_>) -> Result<BTreeMap<String, String>, 
         Err(e) => return Err(TypedRenameError::Client(e.to_string())),
     };
     let decl_path = root.join(req.decl_file);
-    let edit = client
-        .rename(RenameRequest {
-            file: &decl_path,
-            line: req.decl_line,
-            character: req.decl_character,
-            new_name: req.new_name,
-        })
+    let deadline = std::time::Instant::now() + req.timeout;
+    let outcome = aa_ra_client::retry_rename_until_indexed(
+        &mut client,
+        &decl_path,
+        req.decl_line,
+        req.decl_character,
+        req.new_name,
+        deadline,
+        aa_ra_client::DEFAULT_POLL_INTERVAL,
+    );
+    let edit = outcome
+        .edit
         .map_err(|e| TypedRenameError::Client(e.to_string()))?;
     let _ = client.shutdown();
 
@@ -365,18 +379,17 @@ mod tests {
     #[test]
     fn degrades_gracefully_without_rust_analyzer() {
         // Asserts the *absent-RA* contract: the resolver must emit
-        // `TypedRenameError::Unavailable` so the planner falls back to
-        // the syntactic rename. On hosts with RA installed,
-        // `OneShotResolver::resolve` actually talks to the binary and
-        // races RA's workspace indexing — the very first rename
-        // typically fails with `-32602 "No references found at
-        // position"` until indexing completes. Production
-        // `resolve()` does not retry (the new `aa-ra-client`
-        // e2e test does, in test code only); fixing the cold-cache
-        // race in production is tracked as a follow-up. The dedicated
-        // `rust-analyzer-e2e` CI job covers the available-RA path
-        // end-to-end with the retry helper, so skipping here loses no
-        // signal for the absent-path contract this test owns.
+        // `TypedRenameError::Unavailable` so the planner falls back
+        // to the syntactic rename. The available-RA path is now
+        // covered by `aa-ra-client::Session::sync_and_rename` and
+        // `OneShotResolver::resolve` themselves wrapping
+        // `Client::rename` in the `retry_rename_until_indexed`
+        // helper (PR-D), so the cold-start race no longer races —
+        // and the dedicated `rust-analyzer-e2e` CI job exercises
+        // that warm path end-to-end. We still self-skip here when
+        // RA is on PATH because this test specifically owns the
+        // absent-path contract; running it against real RA would
+        // exercise the wrong invariant.
         let ra_available = std::process::Command::new("rust-analyzer")
             .arg("--version")
             .stdout(std::process::Stdio::null())
