@@ -378,14 +378,11 @@ fn _assert_bounds() {
 mod tests {
     use super::*;
     use crate::mock::MockServer;
-    use std::collections::HashMap;
 
     #[test]
     fn initialize_shutdown_round_trip() {
         let root = std::env::temp_dir();
-        let server = MockServer::new().with_rename_response(WorkspaceEdit {
-            changes: HashMap::new(),
-        });
+        let server = MockServer::new().with_rename_response(WorkspaceEdit::default());
         let (reader, writer, _handle) = server.spawn();
         let client =
             Client::with_transport_initialized(reader, writer, &root, Duration::from_secs(5))
@@ -401,9 +398,7 @@ mod tests {
         let file = tmp.join("lib.rs");
         std::fs::write(&file, "fn add() {}\nfn main() { add(); }\n").unwrap();
 
-        let mut canned = WorkspaceEdit {
-            changes: HashMap::new(),
-        };
+        let mut canned = WorkspaceEdit::default();
         let uri = DocumentUri::from_path(&file);
         canned.changes.insert(
             uri.clone(),
@@ -501,21 +496,88 @@ mod tests {
         std::fs::write(root.join("src/lib.rs"), lib).unwrap();
 
         let mut client = Client::spawn(root, Duration::from_secs(60)).expect("spawn rust-analyzer");
-        let edit = client
-            .rename(RenameRequest {
-                file: &root.join("src/lib.rs"),
-                line: 0,
-                // `add` identifier starts at column 7 of `pub fn add(...)`
-                character: 7,
-                new_name: "sum",
-            })
-            .expect("rename");
-        assert!(!edit.changes.is_empty(), "RA returned no edits");
-        let total: usize = edit.changes.values().map(|v| v.len()).sum();
+
+        // rust-analyzer needs to discover + index the workspace before
+        // it can resolve `add` to a symbol. Until indexing completes,
+        // every rename call returns `-32602 "No references found at
+        // position"`. There's no standard LSP notification we can wait
+        // on (the `experimental/serverStatus` notification requires a
+        // matching experimental capability declaration on initialize,
+        // which we don't ship in production). The pragmatic fix in
+        // test code is to retry the rename until indexing has made the
+        // symbol resolvable, capped at 90s — which on a fresh GitHub
+        // Actions runner with a cold cargo cache is enough headroom
+        // for `cargo metadata` + the proc-macro server warmup that RA
+        // does on every project.
+        let edit = retry_rename_until_indexed(
+            &mut client,
+            &root.join("src/lib.rs"),
+            0,
+            7,
+            "sum",
+            Duration::from_secs(90),
+        )
+        .expect("rename (after indexing)");
+        // Use `flatten()` rather than `edit.changes` directly:
+        // rust-analyzer 1.95+ ignores the `documentChanges: false`
+        // capability we declare and always returns its edits in the
+        // newer `documentChanges` envelope. The flatten helper merges
+        // both forms into the single `(uri -> edits)` map every
+        // downstream caller actually wants.
+        let by_uri = edit.flatten();
+        assert!(!by_uri.is_empty(), "RA returned no edits");
+        let total: usize = by_uri.values().map(|v| v.len()).sum();
         assert!(
             total >= 2,
             "expected at least 2 edits (def + 1 caller), got {total}"
         );
         client.shutdown().ok();
+    }
+
+    /// Retry `Client::rename` until rust-analyzer has finished
+    /// indexing the workspace enough to resolve the symbol at
+    /// `(line, character)`. Used by the e2e test only — production
+    /// callers wrap the syntactic-fallback ladder around this and
+    /// don't poll. Recognises the `-32602 "No references found at
+    /// position"` payload as "not indexed yet" and keeps trying;
+    /// any other LSP error fails fast so a real bug doesn't get
+    /// hidden under retry timeout.
+    fn retry_rename_until_indexed(
+        client: &mut Client,
+        file: &std::path::Path,
+        line: u32,
+        character: u32,
+        new_name: &str,
+        timeout: Duration,
+    ) -> Result<crate::types::WorkspaceEdit, ClientError> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            let req = RenameRequest {
+                file,
+                line,
+                character,
+                new_name,
+            };
+            match client.rename(req) {
+                Ok(edit) => {
+                    eprintln!("rename succeeded on attempt {attempts}");
+                    return Ok(edit);
+                }
+                Err(ClientError::LspError(payload))
+                    if payload.contains("No references found at position") =>
+                {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(ClientError::LspError(format!(
+                            "indexing timeout after {attempts} attempts: {payload}"
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                Err(other) => return Err(other),
+            }
+        }
     }
 }

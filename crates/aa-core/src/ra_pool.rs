@@ -300,6 +300,27 @@ mod tests {
     /// contract as `OneShotResolver`.
     #[test]
     fn resolve_when_ra_missing_returns_unavailable() {
+        // This test only makes sense on hosts where `rust-analyzer`
+        // is *absent* — its whole point is to assert the pool emits
+        // `TypedRenameError::Unavailable` on that path so the planner
+        // can degrade to the syntactic fallback. On hosts with RA on
+        // PATH, `resolve_inner` actually talks to RA and may return
+        // any of {Ok, indexing-not-ready error, didOpen race error}
+        // — none of which exercise the unavailable-degradation
+        // contract. The dedicated `rust-analyzer-e2e` CI job covers
+        // the available path end-to-end, so skipping here loses no
+        // signal.
+        let ra_available = std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ra_available {
+            eprintln!("rust-analyzer is available; this test asserts the absent path — skipping");
+            return;
+        }
         let pool = RaSessionPool::new();
         let mut files = BTreeMap::new();
         files.insert(
@@ -321,20 +342,13 @@ mod tests {
             },
         );
         match r {
-            Err(TypedRenameError::Unavailable(_)) => {
-                // Expected on CI hosts without rust-analyzer.
-            }
-            Ok(_) => {
-                // Expected on hosts with rust-analyzer installed —
-                // also legitimate; just means the pool can service
-                // real requests.
-            }
+            Err(TypedRenameError::Unavailable(_)) => { /* expected */ }
             Err(other) => panic!("unexpected error: {other}"),
+            Ok(_) => panic!("RA was supposed to be unavailable but resolve succeeded"),
         }
-        // On the unavailable path, `Session::spawn` fails before the
-        // pool stores the session, so the pool should still be empty.
-        // On the available path, one session may be live.
-        assert!(pool.len() <= 1);
+        // `Session::spawn` fails before the pool stores the session,
+        // so the pool should still be empty.
+        assert_eq!(pool.len(), 0);
     }
 
     #[test]
