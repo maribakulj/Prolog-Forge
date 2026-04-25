@@ -266,6 +266,36 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Phase 1.22 — dual of `inline-function`. Lift a contiguous run
+    /// of statements out of a free-standing fn body into a new helper,
+    /// replacing the original site with a call. The selection is given
+    /// as a 1-indexed inclusive line range; parameters of the new
+    /// helper are listed explicitly as `name:type` pairs.
+    ExtractFunction {
+        /// Workspace root.
+        root: PathBuf,
+        /// Workspace-relative path of the file to edit.
+        #[arg(long = "file")]
+        source_file: String,
+        /// 1-indexed inclusive start line of the selection.
+        #[arg(long)]
+        start_line: u32,
+        /// 1-indexed inclusive end line of the selection.
+        #[arg(long)]
+        end_line: u32,
+        /// Name of the new helper.
+        #[arg(long = "name")]
+        new_name: String,
+        /// Parameter list for the new helper. Format:
+        /// `name1:type1,name2:type2`. Each name must appear in the
+        /// selection; each type must parse as a Rust type. Empty
+        /// list (no `--params`) is fine for parameter-less helpers.
+        #[arg(long, default_value = "")]
+        params: String,
+        /// Actually write the patch to disk after validation.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Produce a proof-carrying explanation for a rename plan: which
     /// observed facts are cited, which rules fire on the shadow graph,
     /// which candidates were considered, which validation stages ran, and
@@ -331,6 +361,23 @@ fn main() -> Result<()> {
             function,
             apply,
         } => cmd_inline_function(root, function, apply),
+        Cmd::ExtractFunction {
+            root,
+            source_file,
+            start_line,
+            end_line,
+            new_name,
+            params,
+            apply,
+        } => cmd_extract_function(
+            root,
+            source_file,
+            start_line,
+            end_line,
+            new_name,
+            params,
+            apply,
+        ),
         Cmd::Explain {
             root,
             from,
@@ -1052,6 +1099,121 @@ fn cmd_inline_function(root: PathBuf, function: String, apply: bool) -> Result<(
     let plan = PatchPlanDto {
         ops: vec![op],
         label: format!("inline function {function}"),
+    };
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_PREVIEW,
+        serde_json::to_value(PatchPreviewParams {
+            workspace_id: ws.clone(),
+            plan: plan.clone(),
+        })?,
+    )?;
+    let preview: PatchPreviewResult = serde_json::from_value(resp)?;
+    println!(
+        "preview: {} byte-level edit(s) across {} file(s)",
+        preview.total_replacements,
+        preview.files.len()
+    );
+    for e in &preview.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+    for f in &preview.files {
+        println!(
+            "\n# {} ({} bytes -> {} bytes, {} edit(s))",
+            f.path, f.before_len, f.after_len, f.replacements
+        );
+        println!("{}", f.diff);
+    }
+
+    if !apply {
+        return Ok(());
+    }
+    if !preview.errors.is_empty() {
+        println!("refusing to apply: preview reported errors");
+        std::process::exit(2);
+    }
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_APPLY,
+        serde_json::to_value(PatchApplyParams {
+            workspace_id: ws,
+            plan,
+            validation_profile: None,
+        })?,
+    )?;
+    let result: PatchApplyResult = serde_json::from_value(resp)?;
+    println!();
+    if result.applied {
+        println!(
+            "applied: commit {} ({} file(s), {} bytes)",
+            result.commit_id.as_deref().unwrap_or("-"),
+            result.files_written,
+            result.bytes_written
+        );
+    } else {
+        println!(
+            "rejected: {}",
+            result.rejection_reason.as_deref().unwrap_or("unknown")
+        );
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_extract_function(
+    root: PathBuf,
+    source_file: String,
+    start_line: u32,
+    end_line: u32,
+    new_name: String,
+    params_csv: String,
+    apply: bool,
+) -> Result<()> {
+    // Parse `--params name1:type1,name2:type2` into the wire shape
+    // `[{ "name": "...", "type": "..." }, ...]`. Empty CSV means no
+    // params (parameter-less helper).
+    let mut params: Vec<serde_json::Value> = Vec::new();
+    if !params_csv.trim().is_empty() {
+        for (i, raw) in params_csv.split(',').enumerate() {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let (name, ty) = trimmed.split_once(':').ok_or_else(|| {
+                anyhow::anyhow!("params[{i}] must be in `name:type` form (got `{trimmed}`)")
+            })?;
+            params.push(serde_json::json!({
+                "name": name.trim(),
+                "type": ty.trim(),
+            }));
+        }
+    }
+
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let op = serde_json::json!({
+        "op": "extract_function",
+        "source_file": source_file,
+        "start_line": start_line,
+        "end_line": end_line,
+        "new_name": new_name,
+        "params": params,
+        "files": [],
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("extract {source_file}:{start_line}..={end_line} -> {new_name}"),
     };
 
     let resp = call(

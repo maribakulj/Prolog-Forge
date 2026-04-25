@@ -319,6 +319,42 @@ fn apply_op(
                 }),
             }
         }
+        PatchOp::ExtractFunction {
+            source_file,
+            start_line,
+            end_line,
+            new_name,
+            params,
+            files,
+        } => {
+            // Single-file op: the transform rewrites only `source_file`
+            // (the call site + the inserted helper). `files`, when
+            // non-empty, is used to gate scope just like the per-file
+            // ops above. When empty, the file is required to be in
+            // `working`.
+            if !files.is_empty() && !files.iter().any(|f| f == source_file) {
+                return;
+            }
+            let Some(src) = working.get(source_file).cloned() else {
+                errors.push(PreviewError {
+                    file: source_file.clone(),
+                    message: format!("extract_function: source_file `{source_file}` not in scope"),
+                });
+                return;
+            };
+            match crate::extract::extract_function(&src, *start_line, *end_line, new_name, params) {
+                Ok((new_src, n)) => {
+                    if n > 0 {
+                        working.insert(source_file.clone(), new_src);
+                        *replacements.entry(source_file.clone()).or_insert(0) += n;
+                    }
+                }
+                Err(msg) => errors.push(PreviewError {
+                    file: source_file.clone(),
+                    message: msg,
+                }),
+            }
+        }
     }
 }
 

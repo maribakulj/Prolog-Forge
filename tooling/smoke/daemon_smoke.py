@@ -1281,6 +1281,131 @@ def main() -> int:
 
         shutil.rmtree(scratch21_root, ignore_errors=True)
 
+        # ---- Phase 1.22: extract_function. Lift a contiguous run of
+        # statements out of a free-standing fn body into a new helper.
+        # Selection: lines 2..=3 of a 4-line parent fn; the trailing
+        # `let _ = b;` (line 4) stays in the parent.
+        scratch22_root = tempfile.mkdtemp(prefix="aa-smoke-extract-")
+        scratch22_demo = os.path.join(scratch22_root, "demo")
+        os.makedirs(os.path.join(scratch22_demo, "src"))
+        with open(os.path.join(scratch22_demo, "Cargo.toml"), "w") as f:
+            f.write("[package]\nname = \"aa-extract-smoke\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n")
+        extract_src = (
+            "pub fn parent(x: i32) {\n"
+            "    let a = x + 1;\n"
+            "    let b = a * 2;\n"
+            "    let _ = b;\n"
+            "}\n"
+        )
+        with open(os.path.join(scratch22_demo, "src/lib.rs"), "w") as f:
+            f.write(extract_src)
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 150, "method": "workspace.open",
+            "params": {"root": scratch22_demo},
+        })
+        ws22 = recv(proc)["result"]["workspace_id"]
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 151, "method": "workspace.index",
+            "params": {"workspace_id": ws22},
+        })
+        recv(proc)
+
+        extract_op = {
+            "op": "extract_function",
+            "source_file": "src/lib.rs",
+            "start_line": 2,
+            "end_line": 3,
+            "new_name": "compute",
+            "params": [{"name": "x", "type": "i32"}],
+            "files": [],
+        }
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 152, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws22,
+                "plan": {
+                    "ops": [extract_op],
+                    "label": "smoke: extract compute",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        # Two byte-level edits: call-site replace + helper insertion.
+        assert r["total_replacements"] == 2, r
+        assert len(r["files"]) == 1, r
+        diff = r["files"][0]["diff"]
+        assert "compute(x);" in diff, diff
+        assert "fn compute(x: i32)" in diff, diff
+        assert "let a = x + 1;" in diff, diff
+        assert "let b = a * 2;" in diff, diff
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 153, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws22,
+                "plan": {
+                    "ops": [extract_op],
+                    "label": "smoke: extract compute apply",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        assert r["applied"] is True, r
+        with open(os.path.join(scratch22_demo, "src/lib.rs")) as f:
+            applied_src = f.read()
+        assert "compute(x);" in applied_src, applied_src
+        assert "fn compute(x: i32)" in applied_src, applied_src
+        # The original two `let`s now live only in the helper, not in
+        # the parent — extracting moves the bytes, doesn't duplicate.
+        assert applied_src.count("let a = x + 1;") == 1, applied_src
+        assert applied_src.count("let b = a * 2;") == 1, applied_src
+
+        # Verify that the planner refuses a partial-statement
+        # selection (lines that cut into the middle of a stmt). After
+        # apply, lines 2..=3 cover the `compute(x);` call + `let _ = b;`
+        # — both whole stmts, syntactically valid to extract a second
+        # time even if semantically absurd, so we use a range we *know*
+        # is partial: lines 5..=5 on the rewritten file land between
+        # the parent's closing `}` and the helper, where there are no
+        # whole stmts. The op must surface an error rather than write.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 154, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws22,
+                "plan": {
+                    "ops": [{
+                        "op": "extract_function",
+                        "source_file": "src/lib.rs",
+                        "start_line": 5,
+                        "end_line": 5,
+                        "new_name": "should_refuse",
+                        "params": [],
+                        "files": [],
+                    }],
+                    "label": "smoke: extract refuses out-of-fn range",
+                },
+            },
+        })
+        refuse = recv(proc)["result"]
+        assert refuse["total_replacements"] == 0, refuse
+        assert refuse["errors"], refuse
+        assert "free-standing fn" in refuse["errors"][0]["message"], refuse
+
+        # Confirm memory.stats now records the `extract_function` op
+        # tag — proves the journal + stats wire path for the new op
+        # kind is intact, mirroring the 1.21 inline_function check.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 155, "method": "memory.stats",
+            "params": {"workspace_id": ws22},
+        })
+        stats = recv(proc)["result"]
+        assert stats["by_op_kind"].get("extract_function", 0) >= 1, stats
+
+        shutil.rmtree(scratch22_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)
