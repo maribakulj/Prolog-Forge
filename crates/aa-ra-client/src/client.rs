@@ -216,6 +216,18 @@ impl Client {
             new_name: req.new_name,
         };
         let result = self.request("textDocument/rename", &params)?;
+        // LSP spec: `textDocument/rename` returns `WorkspaceEdit |
+        // null`. `null` means the server cannot perform the rename
+        // (typically: workspace not yet indexed, or the position
+        // doesn't resolve to a renameable symbol). Surface it as an
+        // empty `WorkspaceEdit` so the wire type stays non-Optional
+        // for prod typed-rename callers — they already treat empty
+        // edits as a no-op via `flatten().is_empty()` — and so the
+        // e2e retry helper can poll for the rename to start producing
+        // edits.
+        if result.is_null() {
+            return Ok(WorkspaceEdit::default());
+        }
         let edit: WorkspaceEdit = serde_json::from_value(result)?;
         Ok(edit)
     }
@@ -277,6 +289,18 @@ impl Client {
             new_name,
         };
         let result = self.request("textDocument/rename", &params)?;
+        // LSP spec: `textDocument/rename` returns `WorkspaceEdit |
+        // null`. `null` means the server cannot perform the rename
+        // (typically: workspace not yet indexed, or the position
+        // doesn't resolve to a renameable symbol). Surface it as an
+        // empty `WorkspaceEdit` so the wire type stays non-Optional
+        // for prod typed-rename callers — they already treat empty
+        // edits as a no-op via `flatten().is_empty()` — and so the
+        // e2e retry helper can poll for the rename to start producing
+        // edits.
+        if result.is_null() {
+            return Ok(WorkspaceEdit::default());
+        }
         let edit: WorkspaceEdit = serde_json::from_value(result)?;
         Ok(edit)
     }
@@ -497,25 +521,27 @@ mod tests {
 
         let mut client = Client::spawn(root, Duration::from_secs(60)).expect("spawn rust-analyzer");
 
-        // rust-analyzer needs to discover + index the workspace before
-        // it can resolve `add` to a symbol. Until indexing completes,
-        // every rename call returns `-32602 "No references found at
-        // position"`. There's no standard LSP notification we can wait
-        // on (the `experimental/serverStatus` notification requires a
-        // matching experimental capability declaration on initialize,
-        // which we don't ship in production). The pragmatic fix in
-        // test code is to retry the rename until indexing has made the
-        // symbol resolvable, capped at 90s — which on a fresh GitHub
-        // Actions runner with a cold cargo cache is enough headroom
-        // for `cargo metadata` + the proc-macro server warmup that RA
-        // does on every project.
+        // rust-analyzer needs to discover + index the workspace
+        // before it can resolve `add` to a symbol. Until indexing
+        // completes, rename calls either return `-32602 "No
+        // references found at position"` *or* `result: null` (LSP
+        // spec — the server is allowed to say "I cannot rename
+        // here"). There's no standard LSP notification we can wait
+        // on (`experimental/serverStatus` would, but it requires a
+        // matching experimental capability declaration on
+        // initialize, which we don't ship in production).
+        // `retry_rename_until_indexed` polls until either form goes
+        // away or the deadline hits. 180s is sized for a cold-cache
+        // GitHub runner where `cargo metadata` + proc-macro server
+        // warmup can take significantly longer than on a developer
+        // host with a warm `~/.cargo`.
         let edit = retry_rename_until_indexed(
             &mut client,
             &root.join("src/lib.rs"),
             0,
             7,
             "sum",
-            Duration::from_secs(90),
+            Duration::from_secs(180),
         )
         .expect("rename (after indexing)");
         // Use `flatten()` rather than `edit.changes` directly:
@@ -560,24 +586,41 @@ mod tests {
                 character,
                 new_name,
             };
-            match client.rename(req) {
-                Ok(edit) => {
+            let result = client.rename(req);
+            // Three "indexing not ready yet" signals can come back from
+            // a real rust-analyzer that hasn't finished its initial
+            // workspace index:
+            //   1. `LspError("No references found at position")` —
+            //      the JSON-RPC error path. Common on faster hosts.
+            //   2. `Ok(WorkspaceEdit { changes: {}, document_changes:
+            //      [] })` — the result-is-`null` LSP path,
+            //      normalised to an empty edit by `Client::rename`.
+            //      Common on slower / cold-cache CI hosts.
+            //   3. `Ok(WorkspaceEdit { ... })` whose `flatten()` is
+            //      empty for some other reason — same retry posture.
+            // Production callers of `Client::rename` already treat
+            // an empty edit as a no-op (the syntactic fallback path
+            // takes over); only the test cares about the difference.
+            let retryable_indexing_signal = match &result {
+                Ok(edit) => edit.flatten().is_empty(),
+                Err(ClientError::LspError(payload)) => {
+                    payload.contains("No references found at position")
+                }
+                Err(_) => false,
+            };
+            if !retryable_indexing_signal {
+                if let Ok(edit) = &result {
                     eprintln!("rename succeeded on attempt {attempts}");
-                    return Ok(edit);
+                    let _ = edit;
                 }
-                Err(ClientError::LspError(payload))
-                    if payload.contains("No references found at position") =>
-                {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(ClientError::LspError(format!(
-                            "indexing timeout after {attempts} attempts: {payload}"
-                        )));
-                    }
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-                Err(other) => return Err(other),
+                return result;
             }
+            if std::time::Instant::now() >= deadline {
+                return Err(ClientError::LspError(format!(
+                    "indexing timeout after {attempts} attempts (last result: {result:?})"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(500));
         }
     }
 }
