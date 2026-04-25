@@ -20,6 +20,11 @@
 all-features = true
 
 [licenses]
+# Permissive only. Copyleft (GPL/AGPL/LGPL) is implicitly refused —
+# any new transitive dep landing under one will fail this check and
+# force a deliberate decision (replace the dep, or relicense the
+# workspace). Curated to *only* the licenses encountered today; new
+# entries get added as deps land, with a comment explaining why.
 allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
@@ -28,9 +33,6 @@ allow = [
   "BSD-3-Clause",
   "ISC",
   "Unicode-3.0",
-  "Unicode-DFS-2016",
-  "Zlib",
-  "MPL-2.0",
   "CC0-1.0",
 ]
 confidence-threshold = 0.93
@@ -38,6 +40,12 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace path deps (`aa-protocol = { path = "crates/aa-protocol" }`)
+# carry no version constraint, which the wildcard linter would otherwise
+# flag for every internal crate. Path deps don't have the supply-chain
+# risk wildcard versioning is meant to catch — they live in this very
+# repo — so we exempt them globally.
+allow-wildcard-paths = true
 # Crates that may exist in two versions because their major-version
 # bump is still propagating through the ecosystem. Revisit each
 # entry on a clippy-version bump and remove what's no longer needed.

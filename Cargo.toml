@@ -24,7 +24,13 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.75"
+# Bumped from 1.75 (which was aspirational and never CI-verified) to
+# 1.85 in PR-A: the workspace's `Cargo.lock` is in v4 format, which
+# Cargo only learned to read in 1.78 and only generates by default
+# from 1.84. 1.85 is the next stable, ~14 months old as of this
+# bump, and the version the CI `msrv` job now enforces. Bump in
+# lockstep with `.github/workflows/ci.yml`.
+rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/maribakulj/prolog-forge"
 authors = ["AYE-AYE contributors"]
@@ -39,19 +45,24 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive"] }
 indexmap = { version = "2.2", features = ["serde"] }
 
-aa-protocol = { path = "crates/aa-protocol" }
-aa-csm = { path = "crates/aa-csm" }
-aa-graph = { path = "crates/aa-graph" }
-aa-rules = { path = "crates/aa-rules" }
-aa-persist = { path = "crates/aa-persist" }
-aa-ingest = { path = "crates/aa-ingest" }
-aa-lang-rust = { path = "crates/aa-lang-rust" }
-aa-llm = { path = "crates/aa-llm" }
-aa-patch = { path = "crates/aa-patch" }
-aa-validate = { path = "crates/aa-validate" }
-aa-explain = { path = "crates/aa-explain" }
-aa-ra-client = { path = "crates/aa-ra-client" }
-aa-core = { path = "crates/aa-core" }
+# Workspace-internal deps are pinned by both `path` (for in-tree
+# resolution during development) and `version` (so cargo-deny doesn't
+# flag them as wildcard deps, and so the workspace stays publishable
+# to crates.io without further surgery). Bump in lockstep with
+# `[workspace.package].version`.
+aa-protocol = { path = "crates/aa-protocol", version = "0.0.1" }
+aa-csm = { path = "crates/aa-csm", version = "0.0.1" }
+aa-graph = { path = "crates/aa-graph", version = "0.0.1" }
+aa-rules = { path = "crates/aa-rules", version = "0.0.1" }
+aa-persist = { path = "crates/aa-persist", version = "0.0.1" }
+aa-ingest = { path = "crates/aa-ingest", version = "0.0.1" }
+aa-lang-rust = { path = "crates/aa-lang-rust", version = "0.0.1" }
+aa-llm = { path = "crates/aa-llm", version = "0.0.1" }
+aa-patch = { path = "crates/aa-patch", version = "0.0.1" }
+aa-validate = { path = "crates/aa-validate", version = "0.0.1" }
+aa-explain = { path = "crates/aa-explain", version = "0.0.1" }
+aa-ra-client = { path = "crates/aa-ra-client", version = "0.0.1" }
+aa-core = { path = "crates/aa-core", version = "0.0.1" }
 
 [profile.release]
 lto = "thin"

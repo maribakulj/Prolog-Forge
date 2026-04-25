@@ -61,10 +61,12 @@ jobs:
   audit:
     name: cargo audit (CVE scan)
     runs-on: ubuntu-latest
-    # Don't gate the merge on a freshly-published advisory — the audit
-    # job runs on every push but its failure is informational. Promote
-    # to required once the advisory baseline is clean for a few weeks.
-    continue-on-error: true
+    # Bloquant: Cargo.lock must carry zero RustSec advisories at any
+    # severity. When a fresh advisory lands and breaks CI, the right
+    # response is to bump the affected dep — never to silence it. If
+    # a dep has no upstream fix, add an explicit `--ignore RUSTSEC-…`
+    # flag in the run step with a comment explaining why and an issue
+    # link tracking the unfix.
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -76,8 +78,11 @@ jobs:
       - name: Install cargo-audit
         # Pin the binary version so a fresh release of cargo-audit
         # can't change CI behaviour overnight. Bump in the same PR
-        # as the rust-toolchain bump.
-        run: cargo install --locked --version 0.21.2 cargo-audit
+        # as the rust-toolchain bump. 0.22 is the first release that
+        # parses CVSS 4.0 advisories (RustSec started publishing them
+        # in early 2026); 0.21 errors out trying to load
+        # `lz4_flex/RUSTSEC-2026-0041.md`, which is why CI was red.
+        run: cargo install --locked --version 0.22.1 cargo-audit
       - name: Run cargo audit
         # `--deny warnings` would also fail on yanked crates and
         # unmaintained advisories; we only want hard CVEs to fail
@@ -87,11 +92,11 @@ jobs:
   deny:
     name: cargo deny (licenses + dups + advisories)
     runs-on: ubuntu-latest
-    # `bans.multiple-versions = "warn"` in deny.toml is intentional —
-    # we surface dup-version drift on every PR but don't gate the
-    # merge until the workspace is dup-free. Tighten to `deny` once
-    # the list is clean.
-    continue-on-error: true
+    # Bloquant. `bans.multiple-versions = "warn"` in deny.toml is
+    # intentional — dup-version drift surfaces on every PR but does
+    # not gate the merge while the ecosystem-induced wit-bindgen
+    # split (wasip2 vs wasip3) lingers. Tighten to `deny` once the
+    # workspace is dup-free.
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -100,15 +105,15 @@ jobs:
           arguments: --workspace
 
   msrv:
-    name: MSRV check (rust 1.75)
+    name: MSRV check (rust 1.85)
     runs-on: ubuntu-latest
-    # Cargo.toml advertises `rust-version = "1.75"`. This job *proves*
-    # the workspace actually builds on that toolchain — without it,
-    # the MSRV claim drifts the moment any contributor uses a feature
-    # introduced in a later release. Bump in Cargo.toml *and* here in
-    # lockstep, with a CHANGELOG note about consumers needing to
-    # upgrade.
-    continue-on-error: true
+    # Bloquant. Cargo.toml advertises `rust-version = "1.85"` (bumped
+    # from the aspirational 1.75 in PR-A — Cargo.lock is in v4 format
+    # which 1.75's cargo can't read). This job *proves* the workspace
+    # actually builds on that toolchain. Bumps must move
+    # `Cargo.toml`, `rust-toolchain.toml` (if also bumping the
+    # primary channel), and this job's pinned version in lockstep,
+    # with a CHANGELOG note about consumers needing to upgrade.
     steps:
       - uses: actions/checkout@v4
       # Override the workspace's pinned channel (1.95.0) with the
@@ -116,12 +121,12 @@ jobs:
       # passing `--toolchain` explicitly to cargo.
       - name: Install MSRV toolchain
         run: |
-          rustup toolchain install 1.75.0 --profile minimal
+          rustup toolchain install 1.85.0 --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: aye-aye-msrv-1.75.0
+          shared-key: aye-aye-msrv-1.85.0
       - name: Build on MSRV
-        run: cargo +1.75.0 build --workspace --all-targets
+        run: cargo +1.85.0 build --workspace --all-targets
 
   vscode-adapter:
     name: VS Code adapter (syntax check)
