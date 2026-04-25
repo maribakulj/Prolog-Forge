@@ -174,6 +174,48 @@ pub enum PatchOp {
         #[serde(default)]
         files: Vec<String>,
     },
+    /// Phase 1.23 — reorder a free-standing function's parameters and
+    /// optionally rename them. The transform rewrites both the
+    /// signature and every bare call site so arguments stay aligned
+    /// with the params they were always meant for.
+    ///
+    /// Deliberately narrow contract (see `crate::change_sig`):
+    ///
+    /// - The op is a *permutation only*. `new_params.len()` must
+    ///   equal the function's current arity, and the multiset of
+    ///   `from_index` values must be exactly `0..n`. Adding or
+    ///   removing parameters is refused — those need different
+    ///   contracts (default values, side-effect analysis on dropped
+    ///   args) tracked as separate future ops.
+    /// - The enclosing fn must be free-standing, with no `self` /
+    ///   generics / `async` / `const` / `unsafe` / variadic.
+    /// - Renames are syntactic. The transform refuses if the new
+    ///   name would shadow another binding in the body, or if the
+    ///   old name is itself shadowed before any use (the rename
+    ///   would change semantics).
+    /// - Macro-body call sites and qualified-path call sites
+    ///   (`crate::f(...)`, `mod::f(...)`) are refused — same
+    ///   posture as `InlineFunction`. Reordering only the bare
+    ///   call sites would silently desync the qualified ones.
+    /// - A mandatory post-edit `syn::parse_file` rejects any
+    ///   rewrite that would not be valid Rust.
+    ChangeSignature {
+        /// Name of the target function. Must resolve to exactly one
+        /// free-standing definition across `files` (or the whole
+        /// workspace if `files` is empty).
+        function: String,
+        /// Permutation of the existing parameters, with optional
+        /// renames. `new_params.len()` must equal the fn's arity;
+        /// the `from_index` values must form a permutation of
+        /// `0..n`. Each entry's `rename` is `None` to keep the
+        /// param's existing name or `Some(new_name)` to change it.
+        new_params: Vec<ParamReorder>,
+        /// If empty, the op runs on every `.rs` file in the preview
+        /// input. Otherwise it is restricted to paths whose
+        /// `relative` form matches one of the entries exactly.
+        #[serde(default)]
+        files: Vec<String>,
+    },
 }
 
 /// One `(name, type)` pair for [`PatchOp::ExtractFunction::params`].
@@ -186,6 +228,23 @@ pub struct ExtractParam {
     /// Parsed with `syn::parse_str::<syn::Type>` at apply time.
     #[serde(rename = "type")]
     pub ty: String,
+}
+
+/// One slot in [`PatchOp::ChangeSignature::new_params`]. Each entry
+/// names an existing param by its 0-indexed position and optionally
+/// renames it; the absence of any "Add a fresh param" variant is the
+/// 1.23 narrow contract speaking — additions land in a later phase
+/// when default-value semantics are pinned down.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamReorder {
+    /// 0-indexed position of the param in the *current* signature.
+    pub from_index: usize,
+    /// `Some(new_name)` to rename the param in the signature *and*
+    /// every use inside the function body. `None` keeps the
+    /// existing name. Renames are refused when shadowing would
+    /// change observable semantics — see `crate::change_sig`.
+    #[serde(default)]
+    pub rename: Option<String>,
 }
 
 /// A `PatchPlan` is an ordered sequence of ops plus auditable metadata.

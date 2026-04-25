@@ -1406,6 +1406,123 @@ def main() -> int:
 
         shutil.rmtree(scratch22_root, ignore_errors=True)
 
+        # ---- Phase 1.23: change_signature. Reorder a free-standing
+        # function's parameters and propagate the permutation to every
+        # bare call site. The fixture has both a swap and a 3-arg
+        # permutation so the daemon's wire round-trip exercises the
+        # full plumbing for the new op kind.
+        scratch23_root = tempfile.mkdtemp(prefix="aa-smoke-change-sig-")
+        scratch23_demo = os.path.join(scratch23_root, "demo")
+        os.makedirs(os.path.join(scratch23_demo, "src"))
+        with open(os.path.join(scratch23_demo, "Cargo.toml"), "w") as f:
+            f.write(
+                "[package]\nname = \"aa-change-sig-smoke\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"
+                "\n[lib]\npath = \"src/lib.rs\"\n"
+            )
+        change_sig_src = (
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n"
+            "\n"
+            "pub fn caller() -> i32 { add(1, 2) + add(3, 4) }\n"
+        )
+        with open(os.path.join(scratch23_demo, "src/lib.rs"), "w") as f:
+            f.write(change_sig_src)
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 160, "method": "workspace.open",
+            "params": {"root": scratch23_demo},
+        })
+        ws23 = recv(proc)["result"]["workspace_id"]
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 161, "method": "workspace.index",
+            "params": {"workspace_id": ws23},
+        })
+        recv(proc)
+
+        # Swap params: from_index 1, then 0. Renames `a` -> `left`,
+        # `b` -> `right` to also exercise the body-rename path.
+        change_sig_op = {
+            "op": "change_signature",
+            "function": "add",
+            "new_params": [
+                {"from_index": 1, "rename": "right"},
+                {"from_index": 0, "rename": "left"},
+            ],
+            "files": [],
+        }
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 162, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws23,
+                "plan": {
+                    "ops": [change_sig_op],
+                    "label": "smoke: swap + rename add",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        # 2 call sites + 1 signature + 2 body renames = 5 byte-level edits.
+        assert r["total_replacements"] == 5, r
+        assert len(r["files"]) == 1, r
+        diff = r["files"][0]["diff"]
+        assert "fn add(right: i32, left: i32)" in diff, diff
+        assert "right + left" in diff or "left + right" in diff, diff
+        assert "add(2, 1)" in diff, diff
+        assert "add(4, 3)" in diff, diff
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 163, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws23,
+                "plan": {
+                    "ops": [change_sig_op],
+                    "label": "smoke: swap + rename add apply",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        assert r["applied"] is True, r
+        with open(os.path.join(scratch23_demo, "src/lib.rs")) as f:
+            applied_src = f.read()
+        assert "fn add(right: i32, left: i32)" in applied_src, applied_src
+        assert "add(2, 1)" in applied_src, applied_src
+        assert "add(4, 3)" in applied_src, applied_src
+
+        # Refusal path: arity mismatch in new_params must surface as
+        # a preview error, not a silent no-op.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 164, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws23,
+                "plan": {
+                    "ops": [{
+                        "op": "change_signature",
+                        "function": "add",
+                        "new_params": [{"from_index": 0, "rename": None}],
+                        "files": [],
+                    }],
+                    "label": "smoke: change_sig refuses arity drop",
+                },
+            },
+        })
+        refuse = recv(proc)["result"]
+        assert refuse["total_replacements"] == 0, refuse
+        assert refuse["errors"], refuse
+        assert "permutation-only" in refuse["errors"][0]["message"], refuse
+
+        # Confirm memory.stats now records the `change_signature` op
+        # tag — proves the journal + stats wire path for the new op
+        # kind is intact, mirroring the 1.21 / 1.22 checks above.
+        send(proc, {
+            "jsonrpc": "2.0", "id": 165, "method": "memory.stats",
+            "params": {"workspace_id": ws23},
+        })
+        stats = recv(proc)["result"]
+        assert stats["by_op_kind"].get("change_signature", 0) >= 1, stats
+
+        shutil.rmtree(scratch23_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

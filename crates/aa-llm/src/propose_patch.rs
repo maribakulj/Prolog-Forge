@@ -465,11 +465,87 @@ fn validate_plan(
                     }
                 }
             }
+            "change_signature" => {
+                // Phase 1.23. Same posture as `inline_function`'s
+                // grounding check: confirm the target name resolves
+                // to a known `function/2` fact, and that the
+                // `new_params` array looks like a valid permutation
+                // shape (entries are objects with a `from_index`
+                // unsigned int, and an optional `rename` string).
+                // The full narrow contract — actual permutation
+                // validity, no shadowing, etc. — is enforced by the
+                // patch planner at preview time.
+                let function = raw
+                    .get("function")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] change_signature missing `function` string")
+                    })?;
+                if function.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] change_signature: `function` must be non-empty"
+                    ));
+                }
+                if !known_function_names.contains(function) {
+                    return Err(format!(
+                        "op[{idx}] change_signature: unknown identifier `{function}` (hallucination)"
+                    ));
+                }
+                let new_params = raw
+                    .get("new_params")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] change_signature missing `new_params` array")
+                    })?;
+                if new_params.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] change_signature: `new_params` must be non-empty"
+                    ));
+                }
+                let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+                for (j, p) in new_params.iter().enumerate() {
+                    let obj = p.as_object().ok_or_else(|| {
+                        format!("op[{idx}] change_signature: new_params[{j}] is not an object")
+                    })?;
+                    let from = obj
+                        .get("from_index")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(|| {
+                            format!(
+                                "op[{idx}] change_signature: new_params[{j}] missing \
+                                 `from_index` unsigned int"
+                            )
+                        })?;
+                    if !seen.insert(from) {
+                        return Err(format!(
+                            "op[{idx}] change_signature: from_index {from} listed twice; \
+                             new_params must be a permutation"
+                        ));
+                    }
+                    if let Some(rename) = obj.get("rename") {
+                        if !rename.is_null() {
+                            let s = rename.as_str().ok_or_else(|| {
+                                format!(
+                                    "op[{idx}] change_signature: new_params[{j}].rename \
+                                     must be a string or null"
+                                )
+                            })?;
+                            if s.is_empty() {
+                                return Err(format!(
+                                    "op[{idx}] change_signature: new_params[{j}].rename \
+                                     must be non-empty when present"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             other => {
                 return Err(format!(
                     "op[{idx}] unknown op tag `{other}` (known: rename_function, \
                      rename_function_typed, add_derive_to_struct, \
-                     remove_derive_from_struct, inline_function, extract_function)"
+                     remove_derive_from_struct, inline_function, extract_function, \
+                     change_signature)"
                 ));
             }
         }

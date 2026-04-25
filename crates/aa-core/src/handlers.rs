@@ -983,6 +983,7 @@ fn op_tag(op: &aa_patch::PatchOp) -> String {
         aa_patch::PatchOp::RemoveDeriveFromStruct { .. } => "remove_derive_from_struct".into(),
         aa_patch::PatchOp::InlineFunction { .. } => "inline_function".into(),
         aa_patch::PatchOp::ExtractFunction { .. } => "extract_function".into(),
+        aa_patch::PatchOp::ChangeSignature { .. } => "change_signature".into(),
     }
 }
 
@@ -1046,6 +1047,24 @@ fn anchors_from_ops(ops: &[aa_patch::PatchOp]) -> Vec<String> {
                 // the `not_proven` verdict pattern Phase 1.21 already
                 // exhibits for fresh insertions.
                 out.push(new_name.clone());
+            }
+            aa_patch::PatchOp::ChangeSignature {
+                function,
+                new_params,
+                ..
+            } => {
+                // The function whose signature changes is the primary
+                // anchor — `function(_, function)` is what the
+                // explainer surfaces. Renames within the params are
+                // also anchors so a rule pack reasoning about
+                // parameter naming conventions sees its premise
+                // facts cited verbatim.
+                out.push(function.clone());
+                for p in new_params {
+                    if let Some(new_name) = &p.rename {
+                        out.push(new_name.clone());
+                    }
+                }
             }
         }
     }

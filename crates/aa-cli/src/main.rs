@@ -296,6 +296,35 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Phase 1.23 — reorder a free-standing function's parameters and
+    /// optionally rename them. Permutation only: adding or removing
+    /// params is refused. The transform rewrites the signature plus
+    /// every bare call site so arguments stay aligned with the param
+    /// they were always meant for.
+    ChangeSignature {
+        /// Workspace root.
+        root: PathBuf,
+        /// Name of the target function.
+        #[arg(long = "function")]
+        function: String,
+        /// Permutation of the existing params, expressed as a CSV of
+        /// 0-indexed source positions in the new order. Example:
+        /// `--order '1,0,2'` swaps the first two of three params.
+        /// Length must equal the function's arity.
+        #[arg(long)]
+        order: String,
+        /// Optional renames, expressed as a CSV of
+        /// `from_index=new_name` pairs (the index is in the
+        /// *original* signature). Example: `--rename '0=left,1=right'`.
+        /// Indices not listed keep their existing identifier. This
+        /// is index-based to match the wire shape — an LLM proposer
+        /// produces the same form natively.
+        #[arg(long, default_value = "")]
+        rename: String,
+        /// Actually write the patch to disk after validation.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Produce a proof-carrying explanation for a rename plan: which
     /// observed facts are cited, which rules fire on the shadow graph,
     /// which candidates were considered, which validation stages ran, and
@@ -378,6 +407,13 @@ fn main() -> Result<()> {
             params,
             apply,
         ),
+        Cmd::ChangeSignature {
+            root,
+            function,
+            order,
+            rename,
+            apply,
+        } => cmd_change_signature(root, function, order, rename, apply),
         Cmd::Explain {
             root,
             from,
@@ -1214,6 +1250,144 @@ fn cmd_extract_function(
     let plan = PatchPlanDto {
         ops: vec![op],
         label: format!("extract {source_file}:{start_line}..={end_line} -> {new_name}"),
+    };
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_PREVIEW,
+        serde_json::to_value(PatchPreviewParams {
+            workspace_id: ws.clone(),
+            plan: plan.clone(),
+        })?,
+    )?;
+    let preview: PatchPreviewResult = serde_json::from_value(resp)?;
+    println!(
+        "preview: {} byte-level edit(s) across {} file(s)",
+        preview.total_replacements,
+        preview.files.len()
+    );
+    for e in &preview.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+    for f in &preview.files {
+        println!(
+            "\n# {} ({} bytes -> {} bytes, {} edit(s))",
+            f.path, f.before_len, f.after_len, f.replacements
+        );
+        println!("{}", f.diff);
+    }
+
+    if !apply {
+        return Ok(());
+    }
+    if !preview.errors.is_empty() {
+        println!("refusing to apply: preview reported errors");
+        std::process::exit(2);
+    }
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_APPLY,
+        serde_json::to_value(PatchApplyParams {
+            workspace_id: ws,
+            plan,
+            validation_profile: None,
+        })?,
+    )?;
+    let result: PatchApplyResult = serde_json::from_value(resp)?;
+    println!();
+    if result.applied {
+        println!(
+            "applied: commit {} ({} file(s), {} bytes)",
+            result.commit_id.as_deref().unwrap_or("-"),
+            result.files_written,
+            result.bytes_written
+        );
+    } else {
+        println!(
+            "rejected: {}",
+            result.rejection_reason.as_deref().unwrap_or("unknown")
+        );
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn cmd_change_signature(
+    root: PathBuf,
+    function: String,
+    order_csv: String,
+    rename_csv: String,
+    apply: bool,
+) -> Result<()> {
+    // Parse `--order '1,0,2'` into `[1, 0, 2]`.
+    let order: Vec<usize> = order_csv
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<usize>()
+                .map_err(|e| anyhow::anyhow!("--order entry `{s}` is not a usize: {e}"))
+        })
+        .collect::<Result<_>>()?;
+    if order.is_empty() {
+        anyhow::bail!("--order must be a non-empty CSV of 0-indexed positions");
+    }
+
+    // Parse `--rename '0=left,2=right'` into a map from_index → new_name.
+    // The wire shape is index-based, so the CLI is too — the user
+    // names the position they want to rename, not the current
+    // identifier. Cleaner than a name-resolution dance and matches
+    // the form an LLM proposer naturally produces.
+    let mut renames_by_index: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
+    for entry in rename_csv.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (idx_s, new) = entry.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("--rename entry `{entry}` must be in `from_index=new_name` form")
+        })?;
+        let idx = idx_s.trim().parse::<usize>().map_err(|e| {
+            anyhow::anyhow!("--rename entry `{entry}` left side must be a usize: {e}")
+        })?;
+        renames_by_index.insert(idx, new.trim().to_string());
+    }
+
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let new_params: Vec<serde_json::Value> = order
+        .iter()
+        .map(|idx| match renames_by_index.get(idx) {
+            Some(new_name) => serde_json::json!({
+                "from_index": idx,
+                "rename": new_name,
+            }),
+            None => serde_json::json!({
+                "from_index": idx,
+                "rename": serde_json::Value::Null,
+            }),
+        })
+        .collect();
+
+    let op = serde_json::json!({
+        "op": "change_signature",
+        "function": function,
+        "new_params": new_params,
+        "files": [],
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("change-signature {function} order={order_csv}"),
     };
 
     let resp = call(
