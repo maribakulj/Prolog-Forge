@@ -41,30 +41,10 @@ of the same local protocol. The core never imports an editor SDK.
 **AYE-AYE** = **A**nalysis **Y**ielding **E**videntiary **A**ssertions
 **Y**ielding **E**xplanations.
 
-The backronym is the architecture in four moves, in the order they
-happen at runtime:
-
-1. **Analysis** — language analyzers parse source files and lower
-   them to facts in a knowledge graph.
-2. **Yielding evidentiary assertions** — a Datalog rule engine
-   derives more facts (`inferred`) from observed ones, with
-   provenance preserved on every derivation. *Evidentiary*: every
-   assertion comes with the chain of premises that justify it.
-3. (a second **Y**) — and again: an LLM orchestrator,
-   bounded by the graph, *yields* further candidate assertions,
-   each one identifier-resolved before it is allowed near the
-   trusted layers.
-4. **Yielding explanations** — `explain.patch` walks back through
-   the chain and produces a proof-carrying explanation: which
-   observed facts, which rule activations, which validation
-   stages, which verdict.
-
-The doubled *Y* is intentional: the runtime is a two-step yield,
+The runtime is a two-step yield,
 symbolic then neural, both feeding the same explainer.
 
-The Datalog rule engine's surface syntax is Prolog-flavored for
-ergonomics — see [`docs/rules-dsl.md`](docs/rules-dsl.md). That's a
-language family choice, not a project identity.
+See [`docs/rules-dsl.md`](docs/rules-dsl.md). 
 
 ---
 
