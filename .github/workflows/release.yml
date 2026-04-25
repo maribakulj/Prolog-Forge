@@ -1,0 +1,250 @@
+name: release
+
+# Triggered by an annotated tag matching `v*` (e.g. `v0.1.0`,
+# `v0.1.0-rc.1`) or by a manual `workflow_dispatch` from the Actions
+# tab — useful for dry-running the cross-compile matrix without
+# minting a real release.
+#
+# Produces a GitHub Release with:
+#   - `aa-<target>.tar.gz`     × N targets   (CLI binary)
+#   - `aa-daemon-<target>.tar.gz` × N targets (daemon binary)
+#   - `aye-aye-vscode-<version>.vsix`        (VS Code adapter)
+#   - `SHA256SUMS`                            (one line per asset)
+#
+# Targets: x86_64-linux-gnu, aarch64-linux-gnu, x86_64-darwin,
+# aarch64-darwin. Windows is intentionally out — same rationale as
+# PR-B's CI matrix: `aa-ra-client` and `aa-core::apply` use POSIX
+# fork+exec / atomic-rename patterns that need Windows-specific code
+# paths to land first.
+#
+# Crates.io publishing is intentionally out of this workflow at the
+# project's `0.0.1` alpha stage — adding it later is a single job
+# guarded by a `CARGO_REGISTRY_TOKEN` secret.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build artifacts but don't create a Release (test the matrix)"
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  # `softprops/action-gh-release` needs `contents: write` to create
+  # and edit the Release. Nothing else needs anything.
+  contents: write
+
+jobs:
+  build-binaries:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        # Honour the workspace's pinned channel from rust-toolchain.toml,
+        # then layer the cross-compile target on top.
+        run: |
+          rustup show active-toolchain || rustup show
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cross-linker (linux-aarch64 only)
+        if: matrix.cross
+        # Cross-compiling aarch64 on a x86_64 ubuntu runner needs the
+        # GNU ld + libc multilib for the target. `gcc-aarch64-linux-gnu`
+        # provides both. Cargo discovers the linker via the env var
+        # below, set in the build step.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build binaries
+        env:
+          # Pinned linker for the linux-aarch64 cross. No-op on the
+          # other targets (cargo only reads target-specific env vars).
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            --bin aa --bin aa-daemon
+
+      - name: Package tarballs
+        # One tar.gz per binary so consumers can `curl | tar xz` a
+        # single artefact for the binary they actually want. The
+        # archive carries the binary and the LICENSE so distribution
+        # is self-contained (Apache-2.0 requires shipping the licence
+        # with the binary).
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for bin in aa aa-daemon; do
+            stage="dist/${bin}-${{ matrix.target }}"
+            mkdir -p "$stage"
+            cp "target/${{ matrix.target }}/release/${bin}" "$stage/"
+            cp LICENSE README.md "$stage/"
+            tar -czf "dist/${bin}-${{ matrix.target }}.tar.gz" \
+              -C dist "${bin}-${{ matrix.target }}"
+            rm -rf "$stage"
+          done
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist/*.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  package-vscode:
+    name: package VS Code .vsix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read adapter version
+        id: ver
+        # Pull the version straight from the adapter's package.json so
+        # the .vsix filename and the manifest agree. We don't want to
+        # tie the adapter version to the workspace version — they
+        # evolve independently (the adapter could ship a bugfix
+        # without requiring a workspace re-release).
+        shell: bash
+        run: |
+          v=$(node -e "process.stdout.write(require('./adapters/vscode/package.json').version)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build .vsix
+        # The .vsix format is a zip with a documented layout: the
+        # extension lives under `extension/` and a `[Content_Types].xml`
+        # at the root tells VS Code's installer how to handle the
+        # archive. We don't ship Microsoft's full `vsce` toolchain
+        # because the adapter is a pure-JS extension with zero npm
+        # deps — the manual zip is reproducible and adds no install
+        # cost.
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage=stage-vsix
+          rm -rf "$stage"
+          mkdir -p "$stage/extension"
+          cp -r adapters/vscode/. "$stage/extension/"
+          cp LICENSE "$stage/extension/"
+          # Minimal `[Content_Types].xml` accepted by the VS Code
+          # installer. The two registered types cover everything
+          # under `extension/`.
+          cat > "$stage/[Content_Types].xml" <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+            <Default Extension="json" ContentType="application/json" />
+            <Default Extension="js" ContentType="application/javascript" />
+            <Default Extension="md" ContentType="text/markdown" />
+            <Default Extension="txt" ContentType="text/plain" />
+          </Types>
+          XML
+          out="aye-aye-vscode-${{ steps.ver.outputs.version }}.vsix"
+          (cd "$stage" && zip -qr "../$out" .)
+          ls -la "$out"
+          echo "vsix=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-vsix
+          path: aye-aye-vscode-*.vsix
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    name: publish GitHub Release
+    needs: [build-binaries, package-vscode]
+    runs-on: ubuntu-latest
+    # Skip the publish step on a `workflow_dispatch` dry-run — the
+    # build-binaries and package-vscode jobs still ran and uploaded
+    # their artefacts to the workflow run, so the user can download
+    # them from the Actions UI for inspection without minting a real
+    # release.
+    if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `softprops/action-gh-release` reads the tag's annotation
+          # for the release body when one isn't supplied; checking
+          # out the tag itself (which is what `push: tags` already
+          # gives us) keeps that path working.
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files
+        # Flatten the per-job artifact directories into a single
+        # `release/` folder so `softprops/action-gh-release` can
+        # glob them with one path.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Each `binaries-<target>` artefact is itself a directory of
+          # `*.tar.gz` files; the .vsix lives one level deeper too.
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.vsix' \) \
+            -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Generate SHA256SUMS
+        # One line per asset, sorted by filename so the file is
+        # diff-able across releases. The format matches what
+        # `sha256sum -c SHA256SUMS` consumes.
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum *.tar.gz *.vsix | sort -k 2) > release/SHA256SUMS
+          cat release/SHA256SUMS
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # When the workflow is triggered by a tag push, `tag_name`
+          # is auto-derived from `github.ref_name`. On
+          # `workflow_dispatch` with `dry_run: false` the user must
+          # tag the commit beforehand — the action will then attach
+          # to the existing tag's release.
+          files: |
+            release/*.tar.gz
+            release/*.vsix
+            release/SHA256SUMS
+          # Generate a release body from commit messages between the
+          # previous tag and this one. Users can override by pre-
+          # creating the release with a custom body.
+          generate_release_notes: true
+          # Mark RC tags (e.g. `v0.1.0-rc.1`) as prereleases so they
+          # don't show up as the "Latest" badge on GitHub. Detection
+          # is by tag name suffix.
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
+          fail_on_unmatched_files: true
