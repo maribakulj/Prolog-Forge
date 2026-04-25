@@ -18,18 +18,23 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
+        # `rustup show` auto-installs the channel pinned in
+        # `rust-toolchain.toml`, so CI runs the exact same toolchain
+        # local devs do. Bump the version in `rust-toolchain.toml`
+        # to upgrade clippy/rustc — never hard-code a different
+        # version here. This kills the "passes locally, fails on CI"
+        # clippy-lint drift class of bug.
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup show active-toolchain || rustup show
           rustup component add rustfmt clippy
 
-      - uses: actions/cache@v4
+      # Smarter than the hand-rolled `actions/cache` — keys on Cargo.lock,
+      # splits registry / git / target into separate caches, and prunes
+      # stale build artefacts on hit. Cuts cold-CI build time from
+      # ~3 min to ~45 s on this workspace.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          shared-key: aye-aye-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -52,3 +57,101 @@ jobs:
         run: |
           set -euo pipefail
           python3 tooling/smoke/daemon_smoke.py
+
+  audit:
+    name: cargo audit (CVE scan)
+    runs-on: ubuntu-latest
+    # Bloquant: Cargo.lock must carry zero RustSec advisories at any
+    # severity. When a fresh advisory lands and breaks CI, the right
+    # response is to bump the affected dep — never to silence it. If
+    # a dep has no upstream fix, add an explicit `--ignore RUSTSEC-…`
+    # flag in the run step with a comment explaining why and an issue
+    # link tracking the unfix.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aye-aye-audit
+      - name: Install cargo-audit
+        # Pin the binary version so a fresh release of cargo-audit
+        # can't change CI behaviour overnight. Bump in the same PR
+        # as the rust-toolchain bump. 0.22 is the first release that
+        # parses CVSS 4.0 advisories (RustSec started publishing them
+        # in early 2026); 0.21 errors out trying to load
+        # `lz4_flex/RUSTSEC-2026-0041.md`, which is why CI was red.
+        run: cargo install --locked --version 0.22.1 cargo-audit
+      - name: Run cargo audit
+        # `--deny warnings` would also fail on yanked crates and
+        # unmaintained advisories; we only want hard CVEs to fail
+        # the job, hence no flag here.
+        run: cargo audit
+
+  deny:
+    name: cargo deny (licenses + dups + advisories)
+    runs-on: ubuntu-latest
+    # Bloquant. `bans.multiple-versions = "warn"` in deny.toml is
+    # intentional — dup-version drift surfaces on every PR but does
+    # not gate the merge while the ecosystem-induced wit-bindgen
+    # split (wasip2 vs wasip3) lingers. Tighten to `deny` once the
+    # workspace is dup-free.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+          arguments: --workspace
+
+  msrv:
+    name: MSRV check (rust 1.85)
+    runs-on: ubuntu-latest
+    # Bloquant. Cargo.toml advertises `rust-version = "1.85"` (bumped
+    # from the aspirational 1.75 in PR-A — Cargo.lock is in v4 format
+    # which 1.75's cargo can't read). This job *proves* the workspace
+    # actually builds on that toolchain. Bumps must move
+    # `Cargo.toml`, `rust-toolchain.toml` (if also bumping the
+    # primary channel), and this job's pinned version in lockstep,
+    # with a CHANGELOG note about consumers needing to upgrade.
+    steps:
+      - uses: actions/checkout@v4
+      # Override the workspace's pinned channel (1.95.0) with the
+      # MSRV. We ignore `rust-toolchain.toml` for this job only by
+      # passing `--toolchain` explicitly to cargo.
+      - name: Install MSRV toolchain
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aye-aye-msrv-1.85.0
+      - name: Build on MSRV
+        run: cargo +1.85.0 build --workspace --all-targets
+
+  vscode-adapter:
+    name: VS Code adapter (syntax check)
+    runs-on: ubuntu-latest
+    # The adapter is intentionally pure-JS with no `npm install` step
+    # (see adapters/vscode/README.md). `node --check` parses each
+    # file and reports any syntax error — enough to catch typos and
+    # broken refactors without standing up a full lint toolchain.
+    # Validate package.json shape too.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Validate package.json
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('adapters/vscode/package.json','utf8'))"
+      - name: Syntax-check every adapter source file
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          status=0
+          for f in adapters/vscode/src/*.js; do
+            echo "checking $f"
+            node --check "$f" || status=1
+          done
+          exit $status

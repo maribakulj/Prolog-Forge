@@ -388,11 +388,88 @@ fn validate_plan(
                     ));
                 }
             }
+            "extract_function" => {
+                // Phase 1.22. Op-shape only: `source_file` non-empty,
+                // a 1-indexed inclusive line range with start <= end,
+                // a non-empty `new_name`, and (optionally) a `params`
+                // array of `{name, type}` objects. The full narrow
+                // contract — selection covers exactly a contiguous
+                // run of stmts, no control-flow leak, no macro body,
+                // free-standing enclosing fn — is enforced by the
+                // planner at preview time. The LLM guard's job here
+                // is only to refuse plans that obviously can't ground:
+                // empty file, empty name, inverted range.
+                let source_file =
+                    raw.get("source_file")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            format!("op[{idx}] extract_function missing `source_file` string")
+                        })?;
+                if source_file.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] extract_function: `source_file` must be non-empty"
+                    ));
+                }
+                let start_line =
+                    raw.get("start_line")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(|| {
+                            format!("op[{idx}] extract_function missing `start_line` unsigned int")
+                        })?;
+                let end_line = raw
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] extract_function missing `end_line` unsigned int")
+                    })?;
+                if start_line == 0 || end_line == 0 {
+                    return Err(format!(
+                        "op[{idx}] extract_function: line numbers are 1-indexed (got start={start_line} end={end_line})"
+                    ));
+                }
+                if end_line < start_line {
+                    return Err(format!(
+                        "op[{idx}] extract_function: end_line {end_line} < start_line {start_line}"
+                    ));
+                }
+                let new_name = raw
+                    .get("new_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!("op[{idx}] extract_function missing `new_name` string")
+                    })?;
+                if new_name.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] extract_function: `new_name` must be non-empty"
+                    ));
+                }
+                if let Some(params) = raw.get("params") {
+                    let arr = params.as_array().ok_or_else(|| {
+                        format!("op[{idx}] extract_function: `params` must be an array")
+                    })?;
+                    for (j, p) in arr.iter().enumerate() {
+                        let obj = p.as_object().ok_or_else(|| {
+                            format!("op[{idx}] extract_function: params[{j}] is not an object")
+                        })?;
+                        let name = obj.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                            format!("op[{idx}] extract_function: params[{j}] missing `name` string")
+                        })?;
+                        let ty = obj.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
+                            format!("op[{idx}] extract_function: params[{j}] missing `type` string")
+                        })?;
+                        if name.is_empty() || ty.is_empty() {
+                            return Err(format!(
+                                "op[{idx}] extract_function: params[{j}] name/type must be non-empty"
+                            ));
+                        }
+                    }
+                }
+            }
             other => {
                 return Err(format!(
                     "op[{idx}] unknown op tag `{other}` (known: rename_function, \
                      rename_function_typed, add_derive_to_struct, \
-                     remove_derive_from_struct, inline_function)"
+                     remove_derive_from_struct, inline_function, extract_function)"
                 ));
             }
         }

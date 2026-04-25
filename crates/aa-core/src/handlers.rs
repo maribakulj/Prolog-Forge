@@ -982,6 +982,7 @@ fn op_tag(op: &aa_patch::PatchOp) -> String {
         aa_patch::PatchOp::AddDeriveToStruct { .. } => "add_derive_to_struct".into(),
         aa_patch::PatchOp::RemoveDeriveFromStruct { .. } => "remove_derive_from_struct".into(),
         aa_patch::PatchOp::InlineFunction { .. } => "inline_function".into(),
+        aa_patch::PatchOp::ExtractFunction { .. } => "extract_function".into(),
     }
 }
 
@@ -1034,6 +1035,17 @@ fn anchors_from_ops(ops: &[aa_patch::PatchOp]) -> Vec<String> {
                 // explainer surfaces `function(_, function)` and any
                 // `calls(_, <fn_id>)` relations citing it.
                 out.push(function.clone());
+            }
+            aa_patch::PatchOp::ExtractFunction { new_name, .. } => {
+                // The new helper's name is the only anchor that exists
+                // post-extraction. Pre-extraction the selection is just
+                // bytes inside the parent fn — there's no entity yet.
+                // The explainer will surface no observed facts on a
+                // first run (the new fn isn't in the graph until the
+                // workspace is re-indexed) which is consistent with
+                // the `not_proven` verdict pattern Phase 1.21 already
+                // exhibits for fresh insertions.
+                out.push(new_name.clone());
             }
         }
     }

@@ -17,6 +17,7 @@
 //! LLM-driven planning land in 1.3 step 2 and 1.4.
 
 pub mod add_derive;
+pub mod extract;
 pub mod inline;
 pub mod ops;
 pub mod plan;
@@ -24,7 +25,7 @@ pub mod rust_rename;
 pub mod typed_rename;
 pub(crate) mod util;
 
-pub use ops::{PatchOp, PatchPlan};
+pub use ops::{ExtractParam, PatchOp, PatchPlan};
 pub use plan::{
     apply_plan, apply_plan_with_resolver, preview, preview_with_resolver, FilePatch, PatchError,
     PatchPreview,

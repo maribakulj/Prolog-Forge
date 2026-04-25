@@ -122,6 +122,70 @@ pub enum PatchOp {
         #[serde(default)]
         files: Vec<String>,
     },
+    /// Phase 1.22 — dual of [`InlineFunction`]. Take a contiguous run
+    /// of statements inside a free-standing function body and lift it
+    /// into a new free-standing helper, replacing the original site
+    /// with a call to that helper.
+    ///
+    /// Deliberately narrow contract (see `crate::extract`):
+    ///
+    /// - The selection is given as a *line range* (1-indexed,
+    ///   inclusive) inside `source_file`, and must cover *exactly* a
+    ///   contiguous run of complete `Stmt`s in a free-standing fn —
+    ///   the last one must not be the function's tail expression.
+    ///   Empty / partial / non-contiguous selections are refused.
+    /// - Control-flow leaks out of the selection are refused:
+    ///   `return`, `break`, `continue`, `?`, `await`, `yield`. So is
+    ///   any macro invocation (we cannot reason about token-stream
+    ///   bodies safely yet).
+    /// - The enclosing fn must itself be free-standing, with no
+    ///   `self` / generics / `async` / `const` / `unsafe`.
+    /// - **Parameters are explicit.** The caller (LLM or human) lists
+    ///   `(name, type)` pairs the new fn should take. The transform
+    ///   checks each `name` is a valid Rust ident, each `type` parses
+    ///   as `syn::Type`, and each `name` is mentioned at least once
+    ///   in the selection — but it does not try to *infer* types
+    ///   from the source (that's a rust-analyzer job, deferred to a
+    ///   later phase). The new fn always returns `()`; the call site
+    ///   is rendered as a statement.
+    /// - The new fn is inserted immediately after the enclosing fn
+    ///   in the same file. A mandatory post-edit re-parse rejects
+    ///   any rewrite that would not be valid Rust.
+    ExtractFunction {
+        /// Workspace-relative path of the file containing the range
+        /// to extract.
+        source_file: String,
+        /// 1-indexed inclusive start line of the selection within
+        /// `source_file`.
+        start_line: u32,
+        /// 1-indexed inclusive end line of the selection.
+        end_line: u32,
+        /// Name of the new helper to create.
+        new_name: String,
+        /// Explicit parameter list `(name, ty)` for the new helper.
+        /// Each name must appear in the selection; each ty must parse
+        /// as a Rust type.
+        #[serde(default)]
+        params: Vec<ExtractParam>,
+        /// If empty, the op runs on every `.rs` file in the preview
+        /// input (but only `source_file` is rewritten). Otherwise it
+        /// is restricted to paths whose `relative` form matches one
+        /// of the entries exactly.
+        #[serde(default)]
+        files: Vec<String>,
+    },
+}
+
+/// One `(name, type)` pair for [`PatchOp::ExtractFunction::params`].
+/// Kept as a plain struct (not a tuple) so the wire shape is
+/// self-describing and tolerates future fields (e.g. `mutable: bool`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractParam {
+    pub name: String,
+    /// Rust type as source text, e.g. `"i32"`, `"&str"`, `"Vec<u8>"`.
+    /// Parsed with `syn::parse_str::<syn::Type>` at apply time.
+    #[serde(rename = "type")]
+    pub ty: String,
 }
 
 /// A `PatchPlan` is an ordered sequence of ops plus auditable metadata.

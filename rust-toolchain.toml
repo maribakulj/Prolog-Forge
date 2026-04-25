@@ -1,3 +1,10 @@
 [toolchain]
-channel = "stable"
+# Pinned to a specific stable release so local clippy matches CI's
+# clippy bit-for-bit. New clippy lints only land when this number is
+# bumped intentionally — that prevents the "passes locally, fails on
+# CI" drift that hit Phase 1.22 (clippy 1.95 added
+# `unnecessary_sort_by` + `unnecessary_min_or_max`). Bump in lockstep
+# with `.github/workflows/ci.yml` and run `cargo clippy --workspace
+# --all-targets -- -D warnings` before pushing the bump.
+channel = "1.95.0"
 components = ["rustfmt", "clippy"]
