@@ -129,7 +129,7 @@ pub fn history(root: &Path, filter: &HistoryFilter) -> Result<Vec<HistoryItem>, 
         .map(HistoryItem::from)
         .collect();
     // History is presented newest-first so the list reads like a log.
-    items.sort_by(|a, b| b.timestamp_unix.cmp(&a.timestamp_unix));
+    items.sort_by_key(|item| std::cmp::Reverse(item.timestamp_unix));
     if let Some(n) = filter.limit {
         items.truncate(n);
     }
@@ -172,7 +172,7 @@ pub fn stats(root: &Path) -> Result<MemoryStats, JournalError> {
     top_files.truncate(20);
     Ok(MemoryStats {
         commits: entries.len(),
-        files_touched: top_files.len().max(0),
+        files_touched: top_files.len(),
         by_op_kind,
         by_validation_profile: by_profile,
         top_files,

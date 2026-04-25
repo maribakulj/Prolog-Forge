@@ -18,8 +18,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
+        # `rustup show` auto-installs the channel pinned in
+        # `rust-toolchain.toml`, so CI runs the exact same toolchain
+        # local devs do. Bump the version in `rust-toolchain.toml`
+        # to upgrade clippy/rustc — never hard-code a different
+        # version here. This kills the "passes locally, fails on CI"
+        # clippy-lint drift class of bug.
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup show active-toolchain || rustup show
           rustup component add rustfmt clippy
 
       - uses: actions/cache@v4
