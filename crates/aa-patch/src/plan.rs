@@ -355,6 +355,31 @@ fn apply_op(
                 }),
             }
         }
+        PatchOp::ChangeSignature {
+            function,
+            new_params,
+            files,
+        } => {
+            // Cross-file op: the transform takes the entire working
+            // map (it needs to locate the unique definition + every
+            // bare call site anywhere in scope) and returns both a
+            // new map and per-file counts. Same shape as
+            // `InlineFunction`'s call.
+            match crate::change_sig::change_signature(working, function, new_params, files) {
+                Ok((new_files, per_file)) => {
+                    for (path, new_src) in new_files {
+                        working.insert(path, new_src);
+                    }
+                    for (path, n) in per_file {
+                        *replacements.entry(path).or_insert(0) += n;
+                    }
+                }
+                Err(msg) => errors.push(PreviewError {
+                    file: files.first().cloned().unwrap_or_default(),
+                    message: msg,
+                }),
+            }
+        }
     }
 }
 
