@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://prolog-forge.dev/schemas/protocol.json",
-  "title": "Prolog Forge protocol types",
-  "description": "Wire types for the Prolog Forge JSON-RPC 2.0 API. Phase 0.",
+  "$id": "https://aye-aye.dev/schemas/protocol.json",
+  "title": "AYE-AYE protocol types",
+  "description": "Wire types for the AYE-AYE JSON-RPC 2.0 API. Phase 0.",
   "$defs": {
     "FactLayer": {
       "type": "string",
@@ -19,6 +19,27 @@
       }
     },
     "WorkspaceId": { "type": "string", "pattern": "^ws-\\d+$" },
+    "ProposalOutcome": {
+      "type": "object",
+      "required": ["predicate", "args", "justification", "accepted"],
+      "properties": {
+        "predicate": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "justification": { "type": "string" },
+        "accepted": { "type": "boolean" },
+        "rejection_reason": { "type": ["string", "null"] },
+        "round": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "Diagnostic": {
+      "type": "object",
+      "required": ["severity", "message"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+        "file": { "type": ["string", "null"] },
+        "message": { "type": "string" }
+      }
+    },
     "ClientCapabilities": {
       "type": "object",
       "required": ["name", "version"],
@@ -198,6 +219,11 @@
               "ops": { "type": "array", "items": { "type": "object" } },
               "label": { "type": "string" }
             }
+          },
+          "validation_profile": {
+            "type": ["string", "null"],
+            "enum": ["default", "typed", "tested", null],
+            "description": "Selects the validation pipeline. `default` runs syntactic + rules; `typed` additionally runs cargo_check."
           }
         }
       },
@@ -329,18 +355,307 @@
           "tokens_out": { "type": "integer", "minimum": 0 },
           "outcomes": {
             "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          }
+        }
+      }
+    },
+    "llm.propose_patch": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "intent", "anchor_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "intent": { "type": "string" },
+          "anchor_id": { "type": "string" },
+          "hops": { "type": "integer", "minimum": 0, "default": 1 },
+          "max_facts": { "type": "integer", "minimum": 1, "default": 256 },
+          "include_memory": { "type": ["integer", "null"], "minimum": 0 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "accepted", "rejected", "cache_hit", "tokens_in", "tokens_out",
+          "candidates"
+        ],
+        "properties": {
+          "accepted": { "type": "integer", "minimum": 0 },
+          "rejected": { "type": "integer", "minimum": 0 },
+          "cache_hit": { "type": "boolean" },
+          "tokens_in": { "type": "integer", "minimum": 0 },
+          "tokens_out": { "type": "integer", "minimum": 0 },
+          "candidates": {
+            "type": "array",
             "items": {
               "type": "object",
-              "required": ["predicate", "args", "justification", "accepted"],
+              "required": ["plan", "justification", "accepted"],
               "properties": {
-                "predicate": { "type": "string" },
-                "args": { "type": "array", "items": { "type": "string" } },
+                "plan": {
+                  "type": "object",
+                  "required": ["ops"],
+                  "properties": {
+                    "ops": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "label": { "type": "string" }
+                  }
+                },
                 "justification": { "type": "string" },
                 "accepted": { "type": "boolean" },
                 "rejection_reason": { "type": ["string", "null"] }
               }
             }
           }
+        }
+      }
+    },
+    "llm.refine": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "intent", "anchor_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "intent": { "type": "string" },
+          "anchor_id": { "type": "string" },
+          "hops": { "type": "integer", "minimum": 0, "default": 1 },
+          "max_facts": { "type": "integer", "minimum": 1, "default": 256 },
+          "max_rounds": { "type": "integer", "minimum": 1, "default": 3 },
+          "prior_outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          },
+          "prior_diagnostics": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/Diagnostic" }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "rounds", "converged", "final_accepted", "final_rejected",
+          "tokens_in_total", "tokens_out_total", "outcomes", "rounds_summary"
+        ],
+        "properties": {
+          "rounds": { "type": "integer", "minimum": 0 },
+          "converged": { "type": "boolean" },
+          "final_accepted": { "type": "integer", "minimum": 0 },
+          "final_rejected": { "type": "integer", "minimum": 0 },
+          "tokens_in_total": { "type": "integer", "minimum": 0 },
+          "tokens_out_total": { "type": "integer", "minimum": 0 },
+          "outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          },
+          "rounds_summary": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "round", "accepted", "rejected", "cache_hit",
+                "tokens_in", "tokens_out"
+              ],
+              "properties": {
+                "round": { "type": "integer", "minimum": 1 },
+                "accepted": { "type": "integer", "minimum": 0 },
+                "rejected": { "type": "integer", "minimum": 0 },
+                "cache_hit": { "type": "boolean" },
+                "tokens_in": { "type": "integer", "minimum": 0 },
+                "tokens_out": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "explain.patch": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "plan"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "plan": {
+            "type": "object",
+            "required": ["ops"],
+            "properties": {
+              "ops": { "type": "array", "items": { "type": "object" } },
+              "label": { "type": "string" }
+            }
+          },
+          "candidate_outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/ProposalOutcome" }
+          },
+          "validation_profile": {
+            "type": ["string", "null"],
+            "enum": ["default", "typed", "tested", null]
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["plan_label", "anchors", "verdict", "evidence", "stats", "summary"],
+        "properties": {
+          "plan_label": { "type": "string" },
+          "anchors": { "type": "array", "items": { "type": "string" } },
+          "verdict": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["accepted", "rejected", "not_proven"] },
+              "commit_id": { "type": ["string", "null"] },
+              "notes": { "type": "array", "items": { "type": "string" } },
+              "reason": { "type": "string" },
+              "failing_stages": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["observed", "inferred", "rule_activation", "candidate", "stage"]
+                }
+              }
+            }
+          },
+          "stats": {
+            "type": "object",
+            "required": [
+              "anchors", "observed_cited", "inferred_cited",
+              "rule_activations", "candidates_considered", "stages_run"
+            ],
+            "properties": {
+              "anchors": { "type": "integer", "minimum": 0 },
+              "observed_cited": { "type": "integer", "minimum": 0 },
+              "inferred_cited": { "type": "integer", "minimum": 0 },
+              "rule_activations": { "type": "integer", "minimum": 0 },
+              "candidates_considered": { "type": "integer", "minimum": 0 },
+              "stages_run": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "summary": { "type": "string" }
+        }
+      }
+    },
+    "memory.history": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "label_prefix": { "type": ["string", "null"] },
+          "op_tag": { "type": ["string", "null"] },
+          "validation_profile": { "type": ["string", "null"] },
+          "limit": { "type": ["integer", "null"], "minimum": 1 }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "commit_id", "timestamp_unix", "label", "files_changed",
+                "bytes_after", "ops_summary", "total_replacements"
+              ],
+              "properties": {
+                "commit_id": { "type": "string" },
+                "timestamp_unix": { "type": "integer", "minimum": 0 },
+                "label": { "type": "string" },
+                "files_changed": { "type": "integer", "minimum": 0 },
+                "bytes_after": { "type": "integer", "minimum": 0 },
+                "ops_summary": { "type": "array", "items": { "type": "string" } },
+                "validation_profile": { "type": ["string", "null"] },
+                "total_replacements": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "memory.get": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id", "commit_id"],
+        "properties": {
+          "workspace_id": { "$ref": "#/$defs/WorkspaceId" },
+          "commit_id": { "type": "string" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "commit_id", "timestamp_unix", "label", "ops_summary",
+          "total_replacements", "files"
+        ],
+        "properties": {
+          "commit_id": { "type": "string" },
+          "timestamp_unix": { "type": "integer", "minimum": 0 },
+          "label": { "type": "string" },
+          "ops_summary": { "type": "array", "items": { "type": "string" } },
+          "validation_profile": { "type": ["string", "null"] },
+          "total_replacements": { "type": "integer", "minimum": 0 },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "before", "after"],
+              "properties": {
+                "path": { "type": "string" },
+                "before": { "type": "string" },
+                "after": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "memory.stats": {
+      "params": {
+        "type": "object",
+        "required": ["workspace_id"],
+        "properties": { "workspace_id": { "$ref": "#/$defs/WorkspaceId" } }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "commits", "files_touched", "by_op_kind",
+          "by_validation_profile", "top_files", "total_bytes_written"
+        ],
+        "properties": {
+          "commits": { "type": "integer", "minimum": 0 },
+          "files_touched": { "type": "integer", "minimum": 0 },
+          "by_op_kind": {
+            "type": "object",
+            "additionalProperties": { "type": "integer", "minimum": 0 }
+          },
+          "by_validation_profile": {
+            "type": "object",
+            "additionalProperties": { "type": "integer", "minimum": 0 }
+          },
+          "top_files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "commit_count"],
+              "properties": {
+                "path": { "type": "string" },
+                "commit_count": { "type": "integer", "minimum": 0 }
+              }
+            }
+          },
+          "first_commit_at": { "type": ["integer", "null"], "minimum": 0 },
+          "last_commit_at": { "type": ["integer", "null"], "minimum": 0 },
+          "total_bytes_written": { "type": "integer", "minimum": 0 }
         }
       }
     },

@@ -1,0 +1,14 @@
+[package]
+name = "rust-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Tiny fixture used by AYE-AYE tests and docs."
+
+[lib]
+path = "src/lib.rs"
+
+# Standalone workspace so the outer AYE-AYE workspace does not absorb
+# this fixture during its own builds. The fixture is only ever built
+# transitively by `aa-validate`'s CargoCheckStage.
+[workspace]

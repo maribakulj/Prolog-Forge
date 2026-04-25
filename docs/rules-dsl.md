@@ -1,4 +1,4 @@
-# Rules DSL — Prolog Forge (Datalog v1)
+# Rules DSL — AYE-AYE (Datalog v1)
 
 The surface syntax is Prolog-flavored for ergonomics. The semantics are pure
 Datalog v1: no function symbols, no negation, no aggregates. Every program

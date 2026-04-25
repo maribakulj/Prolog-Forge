@@ -1,0 +1,13 @@
+[package]
+name = "aa-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bounded LLM orchestrator: provider trait, context builder, schema-validated I/O, response cache"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+aa-graph.workspace = true
+aa-protocol.workspace = true

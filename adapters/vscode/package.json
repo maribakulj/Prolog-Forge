@@ -1,0 +1,65 @@
+{
+  "name": "aye-aye",
+  "displayName": "AYE-AYE",
+  "description": "Neuro-symbolic development runtime — editor-agnostic daemon client.",
+  "version": "0.0.1",
+  "publisher": "aye-aye",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maribakulj/prolog-forge"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ayeAye.renameFunction",
+        "title": "AYE-AYE: Rename Function"
+      },
+      {
+        "command": "ayeAye.proposePatch",
+        "title": "AYE-AYE: Propose Patch (LLM)"
+      },
+      {
+        "command": "ayeAye.explainRename",
+        "title": "AYE-AYE: Explain Rename"
+      },
+      {
+        "command": "ayeAye.showHistory",
+        "title": "AYE-AYE: Show History"
+      },
+      {
+        "command": "ayeAye.showStats",
+        "title": "AYE-AYE: Show Stats"
+      },
+      {
+        "command": "ayeAye.info",
+        "title": "AYE-AYE: Daemon Info"
+      }
+    ],
+    "configuration": {
+      "title": "AYE-AYE",
+      "properties": {
+        "ayeAye.daemonPath": {
+          "type": "string",
+          "default": "aa-daemon",
+          "description": "Path to the aa-daemon binary. Defaults to the name on PATH; set an absolute path for a checked-out build, e.g. `<workspace>/target/debug/aa-daemon`."
+        },
+        "ayeAye.requestTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "Per-request timeout for JSON-RPC calls against aa-daemon, in milliseconds."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "aa-explain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Proof-carrying explanations for AYE-AYE patches (neuro-symbolic justification builder)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+aa-protocol.workspace = true
+aa-graph.workspace = true
+aa-rules.workspace = true

@@ -1,7 +1,12 @@
 /target
+**/target/
 **/*.rs.bk
 Cargo.lock.bak
 .vscode/
 .idea/
 *.swp
 .DS_Store
+
+# Test fixtures' lockfiles are not part of the repo — they get recreated
+# on demand by CargoCheckStage.
+examples/rust-demo/Cargo.lock

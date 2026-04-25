@@ -1,6 +1,6 @@
-# Protocol — Prolog Forge Core
+# Protocol — AYE-AYE Core
 
-**Version:** `0.6.0` (Phase 1 step 5, pre-stable).
+**Version:** `0.14.0` (Phase 1 step 21, pre-stable).
 
 The Core is a JSON-RPC 2.0 server. Adapters (CLI, VS Code, Emacs, …) are
 clients. Nothing else should live in an adapter.
@@ -9,7 +9,7 @@ clients. Nothing else should live in an adapter.
 
 - **Default:** stdio, with LSP-style Content-Length framing.
 - **Planned:** local Unix socket / TCP localhost, same framing. Authentication
-  via a token file (`~/.prologforge/auth`, mode `0600`). gRPC as secondary
+  via a token file (`~/.ayeaye/auth`, mode `0600`). gRPC as secondary
   transport in a later phase.
 
 Frame format:
@@ -45,12 +45,31 @@ server-driven from that list.
 | `rules.load` | Parse a Datalog source block; registers rules and seed facts. |
 | `rules.evaluate` | Run the rule engine to fixpoint; returns `{derived, iterations}`. |
 | `llm.propose` | Ask the bounded LLM orchestrator for candidate facts anchored at an entity; every proposal is identifier-resolved against the graph before insertion at the `candidate` layer. |
+| `llm.refine` | Iterative revision loop. Accepts prior rejections and validator diagnostics, runs up to `max_rounds` of `refine.v1` prompts, and returns every candidate tagged with its round. Converges early when a round produces zero rejections. |
+| `llm.propose_patch` | Ask the LLM orchestrator for *typed patch plans* rather than fact candidates. Each candidate is an `ops + label` plan in the same wire shape `patch.preview` / `patch.apply` / `explain.patch` accept. Every op is identifier-grounded against the graph and rejected with a structured reason on hallucination. Closes the LLM → symbolic loop end-to-end: no translation step between proposal and validation. Optional `include_memory: N` field: the orchestrator fetches the top-N recent commits from `memory.history` and feeds them to the model as a `Prior successes` block, switching to the `patch_propose.v2` prompt schema (separate cache bucket from pure runs). |
 | `patch.preview` | Simulate a typed patch plan against the workspace's source files. Returns a unified diff per changed file plus replacement counts. Does not touch the filesystem. |
-| `patch.apply` | Validate the plan (pluggable stage pipeline — syntactic + rule when rules are loaded) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
+| `patch.apply` | Validate the plan (pluggable stage pipeline selected by `validation_profile` — see below) and, if every stage is green, write the shadow state to disk transactionally (preflight → temp files → atomic rename → rollback on failure) and record a commit entry to the on-disk journal. |
 | `patch.rollback` | Undo a previously applied commit by id. Preflight-checks that the on-disk content still matches what was written at commit time, then atomically restores the pre-commit bytes from the journal. |
+| `explain.patch` | Build a proof-carrying explanation for a typed plan: observed facts cited, rule activations (head + premises), candidates considered, validation stages + diagnostics, and a synthesized verdict (`accepted` / `rejected` / `not_proven`). Pure — reads the graph, does not touch the filesystem. |
+| `memory.history` | Queryable view of the runtime's commit journal. Returns per-commit metadata (id, timestamp, label, op tags, profile, replacement count, files-changed count) newest-first. Filters: `label_prefix`, `op_tag`, `validation_profile`, `limit`. |
+| `memory.get` | Fetch one commit's full journal entry — metadata plus before/after bytes of every file the commit touched. |
+| `memory.stats` | Aggregate over the whole journal: commit count, count by op kind, count by validation profile, top-N most-edited files, first/last commit timestamps, total bytes written. |
+
+## Validation profiles
+
+`patch.apply` and `explain.patch` accept an optional `validation_profile`
+field that selects which stages run against the shadow file set. The
+profile names are part of the wire contract; unknown names are rejected
+with `invalid_params`.
+
+| Profile | Stages | When to use |
+|---|---|---|
+| `default` (or missing) | `syntactic`; `rules` when rule pack loaded | Fast default. Catches broken syntax and any `violation/*` fact derivable from the rule pack. |
+| `typed` | everything in `default` + `cargo_check` | Runs `cargo check --message-format=json` against a temp shadow of the workspace. Upgrades the explainer's verdict from `not_proven` to `accepted` when green. Requires `cargo` on `PATH`; passes with a warning diagnostic when it isn't (the stage is an oracle, not a hard gate). Slower — opt in per apply. |
+| `tested` | everything in `typed` + `cargo_test` | Additionally runs `cargo test --no-fail-fast` against the shadow and parses the runner's stable `test X ... FAILED` lines into one diagnostic per failing test. Strongest behavioral gate; substantially slower (full test compilation + run). Feeds structured failure names into `llm.refine` as prior diagnostics. Phase 1.16 added a direct-impact test selection (tests whose bodies — including macro token trees — mention any anchor); Phase 1.17 extends it to the full *transitive* closure (BFS over per-function ident sets, so `test_X → helper Y → anchor Z` is picked up too). The narrowed selection becomes a `cargo test <name1> <name2>` substring filter; empty selection falls back to the full suite. |
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
-and are the source of truth. The Rust types in `pf-protocol` are expected to
+and are the source of truth. The Rust types in `aa-protocol` are expected to
 stay in sync with that file; a schema-first codegen is on the Phase 1
 roadmap.
 

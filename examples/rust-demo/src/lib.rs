@@ -35,3 +35,19 @@ pub fn countdown(n: i32) -> i32 {
         countdown(n - 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_is_commutative_on_small_ints() {
+        assert_eq!(add(1, 2), 3);
+        assert_eq!(add(2, 1), 3);
+    }
+
+    #[test]
+    fn double_uses_add() {
+        assert_eq!(double(5), 10);
+    }
+}

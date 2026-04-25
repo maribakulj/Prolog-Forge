@@ -1,0 +1,20 @@
+[package]
+name = "aa-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AYE-AYE CLI — reference adapter and CI tool"
+
+[[bin]]
+name = "aa"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+aa-protocol.workspace = true
+aa-core.workspace = true
+aa-rules.workspace = true
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
