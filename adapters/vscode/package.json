@@ -1,9 +1,9 @@
 {
-  "name": "prolog-forge",
-  "displayName": "Prolog Forge",
+  "name": "aye-aye",
+  "displayName": "AYE-AYE",
   "description": "Neuro-symbolic development runtime — editor-agnostic daemon client.",
   "version": "0.0.1",
-  "publisher": "prolog-forge",
+  "publisher": "aye-aye",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -22,42 +22,42 @@
   "contributes": {
     "commands": [
       {
-        "command": "prologForge.renameFunction",
-        "title": "Prolog Forge: Rename Function"
+        "command": "ayeAye.renameFunction",
+        "title": "AYE-AYE: Rename Function"
       },
       {
-        "command": "prologForge.proposePatch",
-        "title": "Prolog Forge: Propose Patch (LLM)"
+        "command": "ayeAye.proposePatch",
+        "title": "AYE-AYE: Propose Patch (LLM)"
       },
       {
-        "command": "prologForge.explainRename",
-        "title": "Prolog Forge: Explain Rename"
+        "command": "ayeAye.explainRename",
+        "title": "AYE-AYE: Explain Rename"
       },
       {
-        "command": "prologForge.showHistory",
-        "title": "Prolog Forge: Show History"
+        "command": "ayeAye.showHistory",
+        "title": "AYE-AYE: Show History"
       },
       {
-        "command": "prologForge.showStats",
-        "title": "Prolog Forge: Show Stats"
+        "command": "ayeAye.showStats",
+        "title": "AYE-AYE: Show Stats"
       },
       {
-        "command": "prologForge.info",
-        "title": "Prolog Forge: Daemon Info"
+        "command": "ayeAye.info",
+        "title": "AYE-AYE: Daemon Info"
       }
     ],
     "configuration": {
-      "title": "Prolog Forge",
+      "title": "AYE-AYE",
       "properties": {
-        "prologForge.daemonPath": {
+        "ayeAye.daemonPath": {
           "type": "string",
-          "default": "pf-daemon",
-          "description": "Path to the pf-daemon binary. Defaults to the name on PATH; set an absolute path for a checked-out build, e.g. `<workspace>/target/debug/pf-daemon`."
+          "default": "aa-daemon",
+          "description": "Path to the aa-daemon binary. Defaults to the name on PATH; set an absolute path for a checked-out build, e.g. `<workspace>/target/debug/aa-daemon`."
         },
-        "prologForge.requestTimeoutMs": {
+        "ayeAye.requestTimeoutMs": {
           "type": "number",
           "default": 30000,
-          "description": "Per-request timeout for JSON-RPC calls against pf-daemon, in milliseconds."
+          "description": "Per-request timeout for JSON-RPC calls against aa-daemon, in milliseconds."
         }
       }
     }

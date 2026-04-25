@@ -1,0 +1,12 @@
+[package]
+name = "aa-rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Datalog-v1 rule engine for AYE-AYE (Prolog-flavored surface syntax)"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+aa-graph.workspace = true
+aa-protocol.workspace = true

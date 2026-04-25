@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://prolog-forge.dev/schemas/protocol.json",
-  "title": "Prolog Forge protocol types",
-  "description": "Wire types for the Prolog Forge JSON-RPC 2.0 API. Phase 0.",
+  "$id": "https://aye-aye.dev/schemas/protocol.json",
+  "title": "AYE-AYE protocol types",
+  "description": "Wire types for the AYE-AYE JSON-RPC 2.0 API. Phase 0.",
   "$defs": {
     "FactLayer": {
       "type": "string",

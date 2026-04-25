@@ -1,4 +1,4 @@
-// JSON-RPC client for pf-daemon.
+// JSON-RPC client for aa-daemon.
 //
 // Spawns the daemon as a child process, speaks LSP-style Content-Length
 // framing over stdio, and correlates requests with responses by numeric
@@ -6,7 +6,7 @@
 // from the sources without an `npm install` step — only Node built-ins
 // (`child_process`, `Buffer`) are used.
 //
-// The protocol surface we speak is mirrored from `pf-protocol`; the
+// The protocol surface we speak is mirrored from `aa-protocol`; the
 // client is intentionally thin and does not know about any specific
 // method. Higher-level flows (rename, explain, memory) live in
 // `extension.js` and compose `request()` calls.
@@ -17,7 +17,7 @@ const { spawn } = require('child_process');
 
 class Client {
   /**
-   * @param {string} binPath Absolute path or PATH-lookup name for pf-daemon.
+   * @param {string} binPath Absolute path or PATH-lookup name for aa-daemon.
    * @param {number} timeoutMs Per-request wall-clock cap in ms.
    * @param {(line: string) => void} [log] Optional sink for stderr/info lines.
    */
@@ -41,8 +41,8 @@ class Client {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.proc.on('error', (err) => {
-      this.log(`[pf-daemon spawn error] ${err.message}`);
-      this._failAllPending(new Error(`pf-daemon spawn: ${err.message}`));
+      this.log(`[aa-daemon spawn error] ${err.message}`);
+      this._failAllPending(new Error(`aa-daemon spawn: ${err.message}`));
     });
     this.proc.stdout.on('data', (chunk) => this._onStdoutData(chunk));
     this.proc.stderr.on('data', (chunk) => {
@@ -51,7 +51,7 @@ class Client {
       const text = chunk.toString('utf8');
       for (const line of text.split(/\r?\n/)) {
         if (line.length > 0) {
-          this.log(`[pf-daemon] ${line}`);
+          this.log(`[aa-daemon] ${line}`);
         }
       }
     });
@@ -59,9 +59,9 @@ class Client {
       const reason = signal
         ? `killed by ${signal}`
         : `exited with code ${code}`;
-      this.log(`[pf-daemon] ${reason}`);
+      this.log(`[aa-daemon] ${reason}`);
       if (!this.shuttingDown) {
-        this._failAllPending(new Error(`pf-daemon ${reason}`));
+        this._failAllPending(new Error(`aa-daemon ${reason}`));
       }
     });
 
@@ -76,7 +76,7 @@ class Client {
    */
   request(method, params) {
     if (!this.proc || this.proc.killed) {
-      return Promise.reject(new Error('pf-daemon not running'));
+      return Promise.reject(new Error('aa-daemon not running'));
     }
     const id = this.nextId++;
     const envelope = {
@@ -153,7 +153,7 @@ class Client {
         // Malformed header — drop everything up to the separator and
         // retry. A real LSP peer would never emit a body without a
         // Content-Length, so this is a defensive path.
-        this.log(`[pf-daemon] malformed header, dropping: ${headerText}`);
+        this.log(`[aa-daemon] malformed header, dropping: ${headerText}`);
         this.buffer = this.buffer.slice(headerEnd + 4);
         continue;
       }
@@ -167,7 +167,7 @@ class Client {
       try {
         msg = JSON.parse(body);
       } catch (e) {
-        this.log(`[pf-daemon] bad JSON: ${e.message}`);
+        this.log(`[aa-daemon] bad JSON: ${e.message}`);
         continue;
       }
       if (msg.id === undefined || msg.id === null) {

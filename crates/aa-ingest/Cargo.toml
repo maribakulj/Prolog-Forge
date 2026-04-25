@@ -1,0 +1,11 @@
+[package]
+name = "aa-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Filesystem ingestion: walk a workspace, dispatch files to analyzers"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+walkdir = "2.5"

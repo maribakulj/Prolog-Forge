@@ -1,7 +1,7 @@
 // VS Code extension entry point.
 //
 // On activation the extension:
-// 1. Spawns the pf-daemon binary (configurable via `prologForge.daemonPath`).
+// 1. Spawns the aa-daemon binary (configurable via `ayeAye.daemonPath`).
 // 2. Runs `session.initialize` and surfaces the server capabilities in the
 //    output channel.
 // 3. Opens the first workspace folder via `workspace.open`.
@@ -30,10 +30,10 @@ let workspaceRoot = null;
  * @param {vscode.ExtensionContext} context
  */
 async function activate(context) {
-  output = vscode.window.createOutputChannel('Prolog Forge');
-  output.appendLine('[pf] activating');
-  const cfg = vscode.workspace.getConfiguration('prologForge');
-  const daemonPath = cfg.get('daemonPath', 'pf-daemon');
+  output = vscode.window.createOutputChannel('AYE-AYE');
+  output.appendLine('[aa] activating');
+  const cfg = vscode.workspace.getConfiguration('ayeAye');
+  const daemonPath = cfg.get('daemonPath', 'aa-daemon');
   const timeoutMs = cfg.get('requestTimeoutMs', 30000);
 
   client = new Client(daemonPath, timeoutMs, (line) => {
@@ -43,15 +43,15 @@ async function activate(context) {
   try {
     const caps = await client.start();
     output.appendLine(
-      `[pf] connected: ${caps.name} ${caps.version} protocol=${caps.protocol_version}`,
+      `[aa] connected: ${caps.name} ${caps.version} protocol=${caps.protocol_version}`,
     );
   } catch (e) {
     const msg =
-      `Failed to start pf-daemon (${daemonPath}). ` +
-      `Set \`prologForge.daemonPath\` to an absolute path, or put pf-daemon on PATH. ` +
+      `Failed to start aa-daemon (${daemonPath}). ` +
+      `Set \`ayeAye.daemonPath\` to an absolute path, or put aa-daemon on PATH. ` +
       `Error: ${e.message}`;
     vscode.window.showErrorMessage(msg);
-    if (output) output.appendLine(`[pf] ${msg}`);
+    if (output) output.appendLine(`[aa] ${msg}`);
     return;
   }
 
@@ -61,9 +61,9 @@ async function activate(context) {
     try {
       const r = await client.request('workspace.open', { root: workspaceRoot });
       workspaceId = r.workspace_id;
-      output.appendLine(`[pf] workspace opened: ${workspaceId} @ ${workspaceRoot}`);
+      output.appendLine(`[aa] workspace opened: ${workspaceId} @ ${workspaceRoot}`);
     } catch (e) {
-      output.appendLine(`[pf] workspace.open failed: ${e.message}`);
+      output.appendLine(`[aa] workspace.open failed: ${e.message}`);
     }
     // Index eagerly so LLM / explain commands see `function(...)` facts
     // without a second user-visible round-trip. Failures are non-fatal:
@@ -74,24 +74,24 @@ async function activate(context) {
           workspace_id: workspaceId,
         });
         output.appendLine(
-          `[pf] indexed: ${r.files_indexed} file(s), ${r.entities} entities, ` +
+          `[aa] indexed: ${r.files_indexed} file(s), ${r.entities} entities, ` +
             `${r.facts_inserted} facts`,
         );
       } catch (e) {
-        output.appendLine(`[pf] workspace.index failed: ${e.message}`);
+        output.appendLine(`[aa] workspace.index failed: ${e.message}`);
       }
     }
   } else {
-    output.appendLine('[pf] no workspace folder — commands will ask to open one');
+    output.appendLine('[aa] no workspace folder — commands will ask to open one');
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('prologForge.renameFunction', cmdRename),
-    vscode.commands.registerCommand('prologForge.proposePatch', cmdProposePatch),
-    vscode.commands.registerCommand('prologForge.explainRename', cmdExplainRename),
-    vscode.commands.registerCommand('prologForge.showHistory', cmdHistory),
-    vscode.commands.registerCommand('prologForge.showStats', cmdStats),
-    vscode.commands.registerCommand('prologForge.info', cmdInfo),
+    vscode.commands.registerCommand('ayeAye.renameFunction', cmdRename),
+    vscode.commands.registerCommand('ayeAye.proposePatch', cmdProposePatch),
+    vscode.commands.registerCommand('ayeAye.explainRename', cmdExplainRename),
+    vscode.commands.registerCommand('ayeAye.showHistory', cmdHistory),
+    vscode.commands.registerCommand('ayeAye.showStats', cmdStats),
+    vscode.commands.registerCommand('ayeAye.info', cmdInfo),
     output,
     // Reap the daemon when the extension unloads.
     { dispose: () => client && client.shutdown() },
@@ -100,12 +100,12 @@ async function activate(context) {
 
 async function requireWorkspace() {
   if (!client) {
-    vscode.window.showErrorMessage('Prolog Forge: daemon is not running');
+    vscode.window.showErrorMessage('AYE-AYE: daemon is not running');
     return null;
   }
   if (!workspaceId) {
     vscode.window.showErrorMessage(
-      'Prolog Forge: no workspace opened (open a folder in VS Code first)',
+      'AYE-AYE: no workspace opened (open a folder in VS Code first)',
     );
     return null;
   }
@@ -138,7 +138,7 @@ async function cmdRename() {
   };
 
   output.show(true);
-  output.appendLine(`\n[pf] preview: rename ${from} -> ${to}`);
+  output.appendLine(`\n[aa] preview: rename ${from} -> ${to}`);
 
   let preview;
   try {
@@ -151,10 +151,10 @@ async function cmdRename() {
     return;
   }
   output.appendLine(
-    `[pf] ${preview.total_replacements} replacement(s) across ${preview.files.length} file(s)`,
+    `[aa] ${preview.total_replacements} replacement(s) across ${preview.files.length} file(s)`,
   );
   for (const err of preview.errors) {
-    output.appendLine(`[pf] error in ${err.file}: ${err.message}`);
+    output.appendLine(`[aa] error in ${err.file}: ${err.message}`);
   }
   for (const f of preview.files) {
     output.appendLine(
@@ -164,7 +164,7 @@ async function cmdRename() {
   }
   if (preview.total_replacements === 0) {
     vscode.window.showInformationMessage(
-      `Prolog Forge: no occurrences of "${from}" to rename`,
+      `AYE-AYE: no occurrences of "${from}" to rename`,
     );
     return;
   }
@@ -177,7 +177,7 @@ async function cmdRename() {
     { placeHolder: `Apply rename ${from} -> ${to}?` },
   );
   if (!choice || choice.label !== 'Apply') {
-    output.appendLine('[pf] apply cancelled');
+    output.appendLine('[aa] apply cancelled');
     return;
   }
 
@@ -193,16 +193,16 @@ async function cmdRename() {
   }
   if (result.applied) {
     output.appendLine(
-      `[pf] applied: commit ${result.commit_id} (${result.files_written} file(s), ${result.bytes_written} bytes)`,
+      `[aa] applied: commit ${result.commit_id} (${result.files_written} file(s), ${result.bytes_written} bytes)`,
     );
     vscode.window.showInformationMessage(
-      `Prolog Forge: rename applied (commit ${result.commit_id})`,
+      `AYE-AYE: rename applied (commit ${result.commit_id})`,
     );
     // Reload the files in open editors so VS Code picks up the new bytes.
     await vscode.commands.executeCommand('workbench.action.files.revert');
   } else {
     const reason = result.rejection_reason || 'unknown';
-    output.appendLine(`[pf] rejected: ${reason}`);
+    output.appendLine(`[aa] rejected: ${reason}`);
     if (result.validation && !result.validation.ok) {
       for (const st of result.validation.stages) {
         if (!st.ok) {
@@ -214,7 +214,7 @@ async function cmdRename() {
         }
       }
     }
-    vscode.window.showErrorMessage(`Prolog Forge: rename rejected (${reason})`);
+    vscode.window.showErrorMessage(`AYE-AYE: rename rejected (${reason})`);
   }
 }
 
@@ -295,7 +295,7 @@ async function cmdProposePatch() {
   }
   if (fns.length === 0) {
     vscode.window.showInformationMessage(
-      'Prolog Forge: no functions indexed (workspace.index ran but the graph is empty)',
+      'AYE-AYE: no functions indexed (workspace.index ran but the graph is empty)',
     );
     return;
   }
@@ -323,7 +323,7 @@ async function cmdProposePatch() {
 
   output.show(true);
   output.appendLine(
-    `\n[pf] propose_patch: anchor=${anchorName} (${anchorId}) intent="${intent}" ` +
+    `\n[aa] propose_patch: anchor=${anchorName} (${anchorId}) intent="${intent}" ` +
       `memory=${includeMemory}`,
   );
 
@@ -342,12 +342,12 @@ async function cmdProposePatch() {
     return;
   }
   output.appendLine(
-    `[pf] accepted=${r.accepted} rejected=${r.rejected} ` +
+    `[aa] accepted=${r.accepted} rejected=${r.rejected} ` +
       `cache_hit=${r.cache_hit} tokens_in=${r.tokens_in} tokens_out=${r.tokens_out}`,
   );
 
   if (r.candidates.length === 0) {
-    vscode.window.showInformationMessage('Prolog Forge: LLM returned no candidates');
+    vscode.window.showInformationMessage('AYE-AYE: LLM returned no candidates');
     return;
   }
 
@@ -363,7 +363,7 @@ async function cmdProposePatch() {
   const accepted = r.candidates.filter((c) => c.accepted);
   if (accepted.length === 0) {
     vscode.window.showInformationMessage(
-      'Prolog Forge: every candidate was rejected by the identifier-resolution guard — see the output channel',
+      'AYE-AYE: every candidate was rejected by the identifier-resolution guard — see the output channel',
     );
     return;
   }
@@ -409,7 +409,7 @@ async function cmdProposePatch() {
       vscode.window.showErrorMessage(`explain.patch failed: ${e.message}`);
       return;
     }
-    output.appendLine(`\n[pf] explain profile=${profile} plan="${ex.plan_label}"`);
+    output.appendLine(`\n[aa] explain profile=${profile} plan="${ex.plan_label}"`);
     output.appendLine(`  anchors: ${(ex.anchors || []).join(', ') || '(none)'}`);
     for (const line of renderVerdict(ex)) {
       output.appendLine(`  ${line}`);
@@ -429,10 +429,10 @@ async function cmdProposePatch() {
     return;
   }
   output.appendLine(
-    `\n[pf] preview: ${preview.total_replacements} replacement(s) across ${preview.files.length} file(s)`,
+    `\n[aa] preview: ${preview.total_replacements} replacement(s) across ${preview.files.length} file(s)`,
   );
   for (const err of preview.errors) {
-    output.appendLine(`[pf] error in ${err.file}: ${err.message}`);
+    output.appendLine(`[aa] error in ${err.file}: ${err.message}`);
   }
   for (const f of preview.files) {
     output.appendLine(
@@ -441,7 +441,7 @@ async function cmdProposePatch() {
     output.appendLine(f.diff);
   }
   if (preview.total_replacements === 0) {
-    vscode.window.showInformationMessage('Prolog Forge: preview is empty — nothing to apply');
+    vscode.window.showInformationMessage('AYE-AYE: preview is empty — nothing to apply');
     return;
   }
   const confirm = await vscode.window.showQuickPick(
@@ -455,7 +455,7 @@ async function cmdProposePatch() {
     { placeHolder: `Apply "${plan.label || 'candidate'}"?` },
   );
   if (!confirm || confirm.label !== 'Apply') {
-    output.appendLine('[pf] apply cancelled');
+    output.appendLine('[aa] apply cancelled');
     return;
   }
 
@@ -472,15 +472,15 @@ async function cmdProposePatch() {
   }
   if (result.applied) {
     output.appendLine(
-      `[pf] applied: commit ${result.commit_id} (${result.files_written} file(s), ${result.bytes_written} bytes)`,
+      `[aa] applied: commit ${result.commit_id} (${result.files_written} file(s), ${result.bytes_written} bytes)`,
     );
     vscode.window.showInformationMessage(
-      `Prolog Forge: applied (commit ${result.commit_id})`,
+      `AYE-AYE: applied (commit ${result.commit_id})`,
     );
     await vscode.commands.executeCommand('workbench.action.files.revert');
   } else {
     const reason = result.rejection_reason || 'unknown';
-    output.appendLine(`[pf] rejected: ${reason}`);
+    output.appendLine(`[aa] rejected: ${reason}`);
     if (result.validation && !result.validation.ok) {
       for (const st of result.validation.stages) {
         if (!st.ok) {
@@ -492,7 +492,7 @@ async function cmdProposePatch() {
         }
       }
     }
-    vscode.window.showErrorMessage(`Prolog Forge: candidate rejected (${reason})`);
+    vscode.window.showErrorMessage(`AYE-AYE: candidate rejected (${reason})`);
   }
 }
 
@@ -526,7 +526,7 @@ async function cmdExplainRename() {
 
   output.show(true);
   output.appendLine(
-    `\n[pf] explain: rename ${from} -> ${to} profile=${profile} (read-only, no file writes)`,
+    `\n[aa] explain: rename ${from} -> ${to} profile=${profile} (read-only, no file writes)`,
   );
 
   let ex;
@@ -563,7 +563,7 @@ async function cmdHistory() {
     return;
   }
   output.show(true);
-  output.appendLine(`\n[pf] history: ${r.items.length} commit(s) (newest first)`);
+  output.appendLine(`\n[aa] history: ${r.items.length} commit(s) (newest first)`);
   if (r.items.length === 0) {
     output.appendLine('  (no commits)');
     return;
@@ -595,7 +595,7 @@ async function cmdStats() {
   }
   output.show(true);
   output.appendLine(
-    `\n[pf] stats: commits=${s.commits} files_touched=${s.files_touched} bytes_written=${s.total_bytes_written}`,
+    `\n[aa] stats: commits=${s.commits} files_touched=${s.files_touched} bytes_written=${s.total_bytes_written}`,
   );
   if (s.first_commit_at != null && s.last_commit_at != null) {
     output.appendLine(`  first: ts=${s.first_commit_at}  last: ts=${s.last_commit_at}`);
@@ -624,7 +624,7 @@ async function cmdStats() {
 
 async function cmdInfo() {
   if (!client) {
-    vscode.window.showErrorMessage('Prolog Forge: daemon is not running');
+    vscode.window.showErrorMessage('AYE-AYE: daemon is not running');
     return;
   }
   let caps;
@@ -637,15 +637,15 @@ async function cmdInfo() {
     return;
   }
   output.show(true);
-  output.appendLine(`\n[pf] name: ${caps.name}`);
-  output.appendLine(`[pf] version: ${caps.version}`);
-  output.appendLine(`[pf] protocol: ${caps.protocol_version}`);
-  output.appendLine('[pf] methods:');
+  output.appendLine(`\n[aa] name: ${caps.name}`);
+  output.appendLine(`[aa] version: ${caps.version}`);
+  output.appendLine(`[aa] protocol: ${caps.protocol_version}`);
+  output.appendLine('[aa] methods:');
   for (const m of caps.methods) {
     output.appendLine(`  - ${m}`);
   }
   if (workspaceId) {
-    output.appendLine(`[pf] workspace: ${workspaceId} @ ${workspaceRoot}`);
+    output.appendLine(`[aa] workspace: ${workspaceId} @ ${workspaceRoot}`);
   }
 }
 

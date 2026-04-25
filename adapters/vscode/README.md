@@ -1,11 +1,11 @@
-# Prolog Forge — VS Code adapter
+# AYE-AYE — VS Code adapter
 
-A thin VS Code client for the `pf-daemon` JSON-RPC server. Speaks the
+A thin VS Code client for the `aa-daemon` JSON-RPC server. Speaks the
 same protocol the CLI speaks; doesn't bundle the daemon.
 
 ## What's here
 
-Six commands, all namespaced under **Prolog Forge** in the command
+Six commands, all namespaced under **AYE-AYE** in the command
 palette (`Cmd/Ctrl+Shift+P`):
 
 | Command | What it does |
@@ -17,8 +17,8 @@ palette (`Cmd/Ctrl+Shift+P`):
 | **Show Stats** | `memory.stats` → aggregates by op kind, by validation profile, top-N edited files. |
 | **Daemon Info** | `session.initialize` — protocol version + list of methods the current daemon advertises. Handy for confirming the adapter is talking to the daemon you expect. |
 
-All output lands in the **Prolog Forge** output channel (View →
-Output → select "Prolog Forge"). Diagnostics from `patch.apply`
+All output lands in the **AYE-AYE** output channel (View →
+Output → select "AYE-AYE"). Diagnostics from `patch.apply`
 validation failures are surfaced verbatim so a rejected rename
 explains itself.
 
@@ -32,7 +32,7 @@ byte-level ops (rename, etc.) which don't need the graph.
 
 ```bash
 # 1. Build the daemon.
-cargo build --bin pf-daemon
+cargo build --bin aa-daemon
 
 # 2. Launch VS Code with this extension loaded from source.
 #    No `npm install` needed — the extension uses only Node built-ins
@@ -40,9 +40,9 @@ cargo build --bin pf-daemon
 code --extensionDevelopmentPath="$(pwd)/adapters/vscode" <path/to/a/workspace>
 
 # 3. Point the extension at the daemon you just built.
-#    Settings → search "Prolog Forge" → Daemon Path.
-#    Default: `pf-daemon` (PATH lookup). For a dev build set, e.g.:
-#      "<abs-path>/Prolog-Forge/target/debug/pf-daemon"
+#    Settings → search "AYE-AYE" → Daemon Path.
+#    Default: `aa-daemon` (PATH lookup). For a dev build set, e.g.:
+#      "<abs-path>/Prolog-Forge/target/debug/aa-daemon"
 ```
 
 The extension activates on VS Code startup, spawns the daemon, sends
@@ -52,9 +52,9 @@ output channel always has the full trace.
 
 ## Settings
 
-- `prologForge.daemonPath` (string, default `pf-daemon`): absolute
+- `ayeAye.daemonPath` (string, default `aa-daemon`): absolute
   path or PATH-lookup name for the daemon binary.
-- `prologForge.requestTimeoutMs` (number, default `30000`): per-RPC
+- `ayeAye.requestTimeoutMs` (number, default `30000`): per-RPC
   wall-clock cap. Bump it if `cargo check` under the `typed`
   validation profile times out on larger workspaces.
 
@@ -83,11 +83,11 @@ doesn't require any adapter change beyond exposing them as commands.
 
 ## Troubleshooting
 
-- **"Failed to start pf-daemon"**: the binary isn't on PATH, or the
+- **"Failed to start aa-daemon"**: the binary isn't on PATH, or the
   absolute path in the setting is wrong. Run
-  `<abs-path-to-pf-daemon> --help` in a terminal to confirm the
+  `<abs-path-to-aa-daemon> --help` in a terminal to confirm the
   binary runs standalone.
-- **"request ... timed out"**: `prologForge.requestTimeoutMs` is too
+- **"request ... timed out"**: `ayeAye.requestTimeoutMs` is too
   low for the operation at hand (typically `cargo test` under the
   `tested` profile). Bump it in settings.
 - **Rename seems to touch nothing**: inspect the diff in the output

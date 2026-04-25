@@ -1,4 +1,4 @@
-# Protocol — Prolog Forge Core
+# Protocol — AYE-AYE Core
 
 **Version:** `0.14.0` (Phase 1 step 21, pre-stable).
 
@@ -9,7 +9,7 @@ clients. Nothing else should live in an adapter.
 
 - **Default:** stdio, with LSP-style Content-Length framing.
 - **Planned:** local Unix socket / TCP localhost, same framing. Authentication
-  via a token file (`~/.prologforge/auth`, mode `0600`). gRPC as secondary
+  via a token file (`~/.ayeaye/auth`, mode `0600`). gRPC as secondary
   transport in a later phase.
 
 Frame format:
@@ -69,7 +69,7 @@ with `invalid_params`.
 | `tested` | everything in `typed` + `cargo_test` | Additionally runs `cargo test --no-fail-fast` against the shadow and parses the runner's stable `test X ... FAILED` lines into one diagnostic per failing test. Strongest behavioral gate; substantially slower (full test compilation + run). Feeds structured failure names into `llm.refine` as prior diagnostics. Phase 1.16 added a direct-impact test selection (tests whose bodies — including macro token trees — mention any anchor); Phase 1.17 extends it to the full *transitive* closure (BFS over per-function ident sets, so `test_X → helper Y → anchor Z` is picked up too). The narrowed selection becomes a `cargo test <name1> <name2>` substring filter; empty selection falls back to the full suite. |
 
 Typed JSON Schemas live in [`schemas/protocol.json`](../schemas/protocol.json)
-and are the source of truth. The Rust types in `pf-protocol` are expected to
+and are the source of truth. The Rust types in `aa-protocol` are expected to
 stay in sync with that file; a schema-first codegen is on the Phase 1
 roadmap.
 

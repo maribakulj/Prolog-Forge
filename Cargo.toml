@@ -4,21 +4,21 @@ resolver = "2"
 # can treat them as independent crates.
 exclude = ["examples"]
 members = [
-    "crates/pf-protocol",
-    "crates/pf-csm",
-    "crates/pf-graph",
-    "crates/pf-rules",
-    "crates/pf-persist",
-    "crates/pf-ingest",
-    "crates/pf-lang-rust",
-    "crates/pf-llm",
-    "crates/pf-patch",
-    "crates/pf-validate",
-    "crates/pf-explain",
-    "crates/pf-ra-client",
-    "crates/pf-core",
-    "crates/pf-daemon",
-    "crates/pf-cli",
+    "crates/aa-protocol",
+    "crates/aa-csm",
+    "crates/aa-graph",
+    "crates/aa-rules",
+    "crates/aa-persist",
+    "crates/aa-ingest",
+    "crates/aa-lang-rust",
+    "crates/aa-llm",
+    "crates/aa-patch",
+    "crates/aa-validate",
+    "crates/aa-explain",
+    "crates/aa-ra-client",
+    "crates/aa-core",
+    "crates/aa-daemon",
+    "crates/aa-cli",
 ]
 
 [workspace.package]
@@ -27,7 +27,7 @@ edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
 repository = "https://github.com/maribakulj/prolog-forge"
-authors = ["Prolog Forge contributors"]
+authors = ["AYE-AYE contributors"]
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -39,19 +39,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive"] }
 indexmap = { version = "2.2", features = ["serde"] }
 
-pf-protocol = { path = "crates/pf-protocol" }
-pf-csm = { path = "crates/pf-csm" }
-pf-graph = { path = "crates/pf-graph" }
-pf-rules = { path = "crates/pf-rules" }
-pf-persist = { path = "crates/pf-persist" }
-pf-ingest = { path = "crates/pf-ingest" }
-pf-lang-rust = { path = "crates/pf-lang-rust" }
-pf-llm = { path = "crates/pf-llm" }
-pf-patch = { path = "crates/pf-patch" }
-pf-validate = { path = "crates/pf-validate" }
-pf-explain = { path = "crates/pf-explain" }
-pf-ra-client = { path = "crates/pf-ra-client" }
-pf-core = { path = "crates/pf-core" }
+aa-protocol = { path = "crates/aa-protocol" }
+aa-csm = { path = "crates/aa-csm" }
+aa-graph = { path = "crates/aa-graph" }
+aa-rules = { path = "crates/aa-rules" }
+aa-persist = { path = "crates/aa-persist" }
+aa-ingest = { path = "crates/aa-ingest" }
+aa-lang-rust = { path = "crates/aa-lang-rust" }
+aa-llm = { path = "crates/aa-llm" }
+aa-patch = { path = "crates/aa-patch" }
+aa-validate = { path = "crates/aa-validate" }
+aa-explain = { path = "crates/aa-explain" }
+aa-ra-client = { path = "crates/aa-ra-client" }
+aa-core = { path = "crates/aa-core" }
 
 [profile.release]
 lto = "thin"

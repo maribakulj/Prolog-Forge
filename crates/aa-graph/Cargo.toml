@@ -1,0 +1,13 @@
+[package]
+name = "aa-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Knowledge graph store (triples, indexes, pattern matching) for AYE-AYE"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true
+aa-protocol.workspace = true

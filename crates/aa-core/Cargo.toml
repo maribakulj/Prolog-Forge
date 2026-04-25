@@ -1,0 +1,28 @@
+[package]
+name = "aa-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Session manager and API handlers for the AYE-AYE Core"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+aa-protocol.workspace = true
+aa-graph.workspace = true
+aa-rules.workspace = true
+aa-persist.workspace = true
+aa-csm.workspace = true
+aa-ingest.workspace = true
+aa-lang-rust.workspace = true
+aa-llm.workspace = true
+aa-patch.workspace = true
+aa-validate.workspace = true
+aa-explain.workspace = true
+aa-ra-client.workspace = true
+tempfile = "3"
+walkdir = "2"
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

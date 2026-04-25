@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test for the pf-daemon JSON-RPC stdio protocol.
+"""End-to-end smoke test for the aa-daemon JSON-RPC stdio protocol.
 
 Spawns the daemon binary, runs a full session (initialize -> open -> load
 rules -> evaluate -> query -> shutdown), and asserts the expected outcomes.
@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 
-BIN = os.environ.get("PF_DAEMON", "./target/debug/pf-daemon")
+BIN = os.environ.get("AA_DAEMON", "./target/debug/aa-daemon")
 
 
 def send(proc: subprocess.Popen, req: dict) -> None:
@@ -60,7 +60,7 @@ def main() -> int:
             "params": {"client": {"name": "smoke", "version": "0"}},
         })
         caps = recv(proc)["result"]
-        assert caps["name"] == "prolog-forge", caps
+        assert caps["name"] == "aye-aye", caps
         assert caps["protocol_version"].startswith("0."), caps
 
         send(proc, {
@@ -240,7 +240,7 @@ def main() -> int:
 
         # ---- patch.apply on a scratch copy, assert validation + FS write
         import shutil, tempfile
-        scratch_root = tempfile.mkdtemp(prefix="pf-smoke-")
+        scratch_root = tempfile.mkdtemp(prefix="aa-smoke-")
         scratch_demo = os.path.join(scratch_root, "demo")
         shutil.copytree("examples/rust-demo", scratch_demo)
         send(proc, {
@@ -306,7 +306,7 @@ def main() -> int:
         # ---- rule-pack apply gate (violation/1 convention)
         # Load a rule that forbids a function named `sum`, then attempt to
         # re-apply the same rename against a fresh scratch. Expect rejection.
-        scratch2_root = tempfile.mkdtemp(prefix="pf-smoke-rules-")
+        scratch2_root = tempfile.mkdtemp(prefix="aa-smoke-rules-")
         scratch2_demo = os.path.join(scratch2_root, "demo")
         shutil.copytree("examples/rust-demo", scratch2_demo)
         send(proc, {
@@ -410,7 +410,7 @@ def main() -> int:
         assert explained_clean["stats"]["stages_run"] == 1, explained_clean
 
         # ---- full loop: apply -> rollback -> verify disk restored.
-        scratch3_root = tempfile.mkdtemp(prefix="pf-smoke-rollback-")
+        scratch3_root = tempfile.mkdtemp(prefix="aa-smoke-rollback-")
         scratch3_demo = os.path.join(scratch3_root, "demo")
         shutil.copytree("examples/rust-demo", scratch3_demo)
         send(proc, {
@@ -452,7 +452,7 @@ def main() -> int:
         assert "pub fn sum(" not in restored, "rollback must remove patch content"
         # Journal entry must have been deleted.
         assert not os.path.exists(os.path.join(
-            scratch3_demo, ".prolog-forge/journal", f"{commit_id}.json"
+            scratch3_demo, ".aye-aye/journal", f"{commit_id}.json"
         )), "rollback must delete journal entry"
 
         # ---- validation_profile = "typed": cargo_check on a complete
@@ -463,8 +463,8 @@ def main() -> int:
         # have been rejected — cargo_check finds unresolved `add` in the
         # test module — and that demo is now out of date. The Phase 1.10
         # demo is covered by the `skips_macro_rules_meta_variable_bodies`
-        # unit test in pf-patch.
-        scratch4_root = tempfile.mkdtemp(prefix="pf-smoke-typed-")
+        # unit test in aa-patch.
+        scratch4_root = tempfile.mkdtemp(prefix="aa-smoke-typed-")
         scratch4_demo = os.path.join(scratch4_root, "demo")
         shutil.copytree("examples/rust-demo", scratch4_demo)
         send(proc, {
@@ -578,7 +578,7 @@ def main() -> int:
         # the shadow. `useless -> blank` is a no-op for behavior (zero
         # callers, no test depends on it), so the existing tests stay
         # green and the apply should succeed.
-        scratch5_root = tempfile.mkdtemp(prefix="pf-smoke-tested-")
+        scratch5_root = tempfile.mkdtemp(prefix="aa-smoke-tested-")
         scratch5_demo = os.path.join(scratch5_root, "demo")
         shutil.copytree("examples/rust-demo", scratch5_demo)
         send(proc, {
@@ -616,7 +616,7 @@ def main() -> int:
         # symbolic grounding guard filters hallucinations, and each
         # grounded plan is directly consumable by explain.patch. This
         # closes the full neuro-symbolic loop end-to-end.
-        scratch6_root = tempfile.mkdtemp(prefix="pf-smoke-propose-patch-")
+        scratch6_root = tempfile.mkdtemp(prefix="aa-smoke-propose-patch-")
         scratch6_demo = os.path.join(scratch6_root, "demo")
         shutil.copytree("examples/rust-demo", scratch6_demo)
         send(proc, {
@@ -685,9 +685,9 @@ def main() -> int:
         # return with a per-file PreviewError that names
         # rust-analyzer, and the filesystem must remain untouched.
         # Hosts with RA on PATH would instead return a diff — that
-        # path is exercised by `cargo test -p pf-ra-client` against
+        # path is exercised by `cargo test -p aa-ra-client` against
         # the real binary.
-        scratch7_root = tempfile.mkdtemp(prefix="pf-smoke-typed-rename-")
+        scratch7_root = tempfile.mkdtemp(prefix="aa-smoke-typed-rename-")
         scratch7_demo = os.path.join(scratch7_root, "demo")
         shutil.copytree("examples/rust-demo", scratch7_demo)
         send(proc, {
@@ -738,7 +738,7 @@ def main() -> int:
         # shape end-to-end. We preview + apply `#[derive(Debug, Clone)]`
         # on `Counter`, assert the on-disk file gained the attribute,
         # and that the syntactic-stage revalidation still passes.
-        scratch8_root = tempfile.mkdtemp(prefix="pf-smoke-add-derive-")
+        scratch8_root = tempfile.mkdtemp(prefix="aa-smoke-add-derive-")
         scratch8_demo = os.path.join(scratch8_root, "demo")
         shutil.copytree("examples/rust-demo", scratch8_demo)
         send(proc, {
@@ -823,7 +823,7 @@ def main() -> int:
         # stays out of the cache, so the second call repeats the same
         # failure path. Either way, success is: no daemon death, no
         # silent no-op, a clear diagnostic.
-        scratch9_root = tempfile.mkdtemp(prefix="pf-smoke-typed-pool-")
+        scratch9_root = tempfile.mkdtemp(prefix="aa-smoke-typed-pool-")
         scratch9_demo = os.path.join(scratch9_root, "demo")
         shutil.copytree("examples/rust-demo", scratch9_demo)
         send(proc, {
@@ -873,7 +873,7 @@ def main() -> int:
         # memory.history sees both, memory.stats groups them by op
         # kind and by profile, and memory.get round-trips a single
         # entry's full body.
-        scratch10_root = tempfile.mkdtemp(prefix="pf-smoke-memory-")
+        scratch10_root = tempfile.mkdtemp(prefix="aa-smoke-memory-")
         scratch10_demo = os.path.join(scratch10_root, "demo")
         shutil.copytree("examples/rust-demo", scratch10_demo)
         send(proc, {
@@ -980,7 +980,7 @@ def main() -> int:
         # include_memory and assert the memory-aware run produces at
         # least one extra candidate whose label is tagged
         # [memory-biased].
-        scratch11_root = tempfile.mkdtemp(prefix="pf-smoke-memory-bias-")
+        scratch11_root = tempfile.mkdtemp(prefix="aa-smoke-memory-bias-")
         scratch11_demo = os.path.join(scratch11_root, "demo")
         shutil.copytree("examples/rust-demo", scratch11_demo)
         send(proc, {
@@ -1076,7 +1076,7 @@ def main() -> int:
         # add_derive_to_struct. Apply an add first, then remove every
         # derive one by one; assert the final file is byte-identical
         # to the pre-add state (full round-trip).
-        scratch12_root = tempfile.mkdtemp(prefix="pf-smoke-remove-derive-")
+        scratch12_root = tempfile.mkdtemp(prefix="aa-smoke-remove-derive-")
         scratch12_demo = os.path.join(scratch12_root, "demo")
         shutil.copytree("examples/rust-demo", scratch12_demo)
         with open(os.path.join(scratch12_demo, "src/lib.rs")) as f:
@@ -1188,11 +1188,11 @@ def main() -> int:
         # We use a scratch fixture with a small helper whose every call
         # site is bare — rust-demo's real helpers are referenced from
         # macro bodies (`assert_eq!(add(1,2), 3)`) which inline refuses.
-        scratch21_root = tempfile.mkdtemp(prefix="pf-smoke-inline-")
+        scratch21_root = tempfile.mkdtemp(prefix="aa-smoke-inline-")
         scratch21_demo = os.path.join(scratch21_root, "demo")
         os.makedirs(os.path.join(scratch21_demo, "src"))
         with open(os.path.join(scratch21_demo, "Cargo.toml"), "w") as f:
-            f.write("[package]\nname = \"pf-inline-smoke\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n")
+            f.write("[package]\nname = \"aa-inline-smoke\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n")
         inline_src = (
             "pub fn sq(x: i32) -> i32 { x * x }\n"
             "\n"
