@@ -42,6 +42,11 @@ pub struct Session {
     _tmp: tempfile::TempDir,
     client: Client,
     known: BTreeMap<String, FileState>,
+    /// Wall-clock budget for any single rename, including the
+    /// indexing-not-ready retries. Stored at spawn time so
+    /// `sync_and_rename` doesn't need to grow a parameter — keeps
+    /// the pool's call-sites unchanged.
+    rename_timeout: Duration,
 }
 
 impl Session {
@@ -87,6 +92,7 @@ impl Session {
             _tmp: tmp,
             client,
             known,
+            rename_timeout: timeout,
         })
     }
 
@@ -111,9 +117,27 @@ impl Session {
     ) -> Result<WorkspaceEdit, ClientError> {
         self.sync(files)?;
 
+        // Wrap the rename in `retry_rename_at_until_indexed` so the
+        // very first call against a freshly-spawned session — the
+        // one that races RA's initial indexing pass — doesn't
+        // surface a spurious "rename failed" diagnostic. After the
+        // first success the retry helper short-circuits on
+        // attempt 1, so warm calls pay only one trivial
+        // `flatten().is_empty()` check on top of the LSP
+        // round-trip. See `crate::retry` for the full set of
+        // not-ready signals the helper recognises.
         let decl_path = self.root.join(decl_file);
-        self.client
-            .rename_at(&decl_path, decl_line, decl_character, new_name)
+        let deadline = std::time::Instant::now() + self.rename_timeout;
+        let outcome = crate::retry::retry_rename_at_until_indexed(
+            &mut self.client,
+            &decl_path,
+            decl_line,
+            decl_character,
+            new_name,
+            deadline,
+            crate::retry::DEFAULT_POLL_INTERVAL,
+        );
+        outcome.edit
     }
 
     /// Public for the pool's use when it wants to apply a `WorkspaceEdit`
@@ -210,6 +234,10 @@ mod tests {
             _tmp: tmp,
             client,
             known: BTreeMap::new(),
+            // Tests don't exercise the rename retry path (the mock
+            // returns the canned edit on attempt 1) so any non-zero
+            // value works. 5s matches the mock client's own timeout.
+            rename_timeout: Duration::from_secs(5),
         };
         (root, session, handle)
     }
