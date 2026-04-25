@@ -1523,6 +1523,140 @@ def main() -> int:
 
         shutil.rmtree(scratch23_root, ignore_errors=True)
 
+        # ---- Phase 1.24: move_item. Move a free-standing helper from
+        # one workspace file to another. Verifies the verbatim move,
+        # the destination merge, and the refusal-on-external-ref path
+        # that the 1.24 narrow contract documents.
+        scratch24_root = tempfile.mkdtemp(prefix="aa-smoke-move-item-")
+        scratch24_demo = os.path.join(scratch24_root, "demo")
+        os.makedirs(os.path.join(scratch24_demo, "src"))
+        with open(os.path.join(scratch24_demo, "Cargo.toml"), "w") as f:
+            f.write(
+                "[package]\nname = \"aa-move-item-smoke\"\nversion = \"0.0.1\"\nedition = \"2021\"\n"
+                "\n[lib]\npath = \"src/lib.rs\"\n"
+            )
+        # Two source files. `helpers.rs` defines `unused_helper` (no
+        # external refs — eligible for the move) and `kept` (keeps
+        # the file non-empty post-move). `lib.rs` is the destination.
+        with open(os.path.join(scratch24_demo, "src/lib.rs"), "w") as f:
+            f.write(
+                "pub mod helpers;\n"
+                "\n"
+                "pub fn entry() -> i32 { 1 }\n"
+            )
+        with open(os.path.join(scratch24_demo, "src/helpers.rs"), "w") as f:
+            f.write(
+                "pub fn kept() -> i32 { 0 }\n"
+                "\n"
+                "/// docstring travels with the move\n"
+                "#[inline]\n"
+                "pub fn unused_helper() -> i32 { 7 }\n"
+            )
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 170, "method": "workspace.open",
+            "params": {"root": scratch24_demo},
+        })
+        ws24 = recv(proc)["result"]["workspace_id"]
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 171, "method": "workspace.index",
+            "params": {"workspace_id": ws24},
+        })
+        recv(proc)
+
+        move_op = {
+            "op": "move_item",
+            "item_kind": "function",
+            "item_name": "unused_helper",
+            "from_file": "src/helpers.rs",
+            "to_file": "src/lib.rs",
+            "files": [],
+        }
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 172, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws24,
+                "plan": {
+                    "ops": [move_op],
+                    "label": "smoke: move unused_helper",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        # 1 byte-level edit per file (removal + append) = 2 total.
+        assert r["total_replacements"] == 2, r
+        # Both files appear in the diff list (one shrinks, one grows).
+        paths = sorted(f["path"] for f in r["files"])
+        assert paths == ["src/helpers.rs", "src/lib.rs"], paths
+        helpers_diff = next(f for f in r["files"] if f["path"] == "src/helpers.rs")["diff"]
+        lib_diff = next(f for f in r["files"] if f["path"] == "src/lib.rs")["diff"]
+        assert "-pub fn unused_helper" in helpers_diff, helpers_diff
+        assert "+pub fn unused_helper" in lib_diff, lib_diff
+        assert "+/// docstring travels with the move" in lib_diff, lib_diff
+        assert "+#[inline]" in lib_diff, lib_diff
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 173, "method": "patch.apply",
+            "params": {
+                "workspace_id": ws24,
+                "plan": {
+                    "ops": [move_op],
+                    "label": "smoke: move unused_helper apply",
+                },
+            },
+        })
+        r = recv(proc)["result"]
+        assert r["applied"] is True, r
+        with open(os.path.join(scratch24_demo, "src/lib.rs")) as f:
+            new_lib = f.read()
+        with open(os.path.join(scratch24_demo, "src/helpers.rs")) as f:
+            new_helpers = f.read()
+        assert "pub fn unused_helper() -> i32 { 7 }" in new_lib, new_lib
+        assert "/// docstring travels with the move" in new_lib, new_lib
+        assert "unused_helper" not in new_helpers, new_helpers
+        # `kept` must still be in helpers.rs.
+        assert "pub fn kept" in new_helpers, new_helpers
+
+        # Refusal path: try to move `entry` (now in lib.rs) to
+        # helpers.rs, but `entry` isn't yet referenced. We need to
+        # add a reference to make the test deterministic. Re-write
+        # helpers.rs to call `entry` so the move attempt has a
+        # dangling-ref candidate.
+        with open(os.path.join(scratch24_demo, "src/helpers.rs"), "a") as f:
+            f.write("\npub fn caller() -> i32 { crate::entry() }\n")
+        send(proc, {
+            "jsonrpc": "2.0", "id": 174, "method": "patch.preview",
+            "params": {
+                "workspace_id": ws24,
+                "plan": {
+                    "ops": [{
+                        "op": "move_item",
+                        "item_kind": "function",
+                        "item_name": "entry",
+                        "from_file": "src/lib.rs",
+                        "to_file": "src/helpers.rs",
+                        "files": [],
+                    }],
+                    "label": "smoke: move_item refuses on external ref",
+                },
+            },
+        })
+        refuse = recv(proc)["result"]
+        assert refuse["total_replacements"] == 0, refuse
+        assert refuse["errors"], refuse
+        assert "referenced from" in refuse["errors"][0]["message"], refuse
+
+        send(proc, {
+            "jsonrpc": "2.0", "id": 175, "method": "memory.stats",
+            "params": {"workspace_id": ws24},
+        })
+        stats = recv(proc)["result"]
+        assert stats["by_op_kind"].get("move_item", 0) >= 1, stats
+
+        shutil.rmtree(scratch24_root, ignore_errors=True)
+
         shutil.rmtree(scratch_root, ignore_errors=True)
         shutil.rmtree(scratch2_root, ignore_errors=True)
         shutil.rmtree(scratch3_root, ignore_errors=True)

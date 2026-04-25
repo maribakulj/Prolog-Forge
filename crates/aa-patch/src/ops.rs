@@ -216,6 +216,71 @@ pub enum PatchOp {
         #[serde(default)]
         files: Vec<String>,
     },
+    /// Phase 1.24 — physically move a free-standing item (a `fn`,
+    /// `struct`, `enum`, or `union`) from one workspace file to
+    /// another. Verbatim move: the item's source bytes — including
+    /// its outer attributes, its visibility, and any docstrings —
+    /// are appended to the destination file and removed from the
+    /// source file.
+    ///
+    /// Deliberately narrow contract (see `crate::move_item`):
+    ///
+    /// - The item must be at the file's top level (not nested in
+    ///   `mod foo { … }`). Nested items would need a path-rewrite
+    ///   pass that is out of scope for 1.24.
+    /// - The item must be free-standing: no `impl Foo` block
+    ///   attached to a moved type, no generic parameters, no
+    ///   procedural-macro attributes whose semantics depend on
+    ///   the file path.
+    /// - **The item must not be referenced from anywhere else in
+    ///   the workspace** by name — neither through a `use`
+    ///   statement, a qualified path (`crate::a::name`,
+    ///   `mod::name`), nor a macro body. The op refuses rather
+    ///   than perform a partial rewrite that leaves the workspace
+    ///   in a broken state. Updating those references is a
+    ///   different, RA-driven op planned for a later phase.
+    /// - The destination file must already exist. Creating new
+    ///   files is out of scope for 1.24 (it would require
+    ///   updating `mod` declarations, which depends on the
+    ///   workspace's module hierarchy that the patch planner does
+    ///   not yet model).
+    /// - The destination file must not already define an item
+    ///   with the same name and kind. Same-name collisions are
+    ///   refused; no merge.
+    /// - A mandatory post-edit `syn::parse_file` rejects any
+    ///   rewrite that would not be valid Rust on either file.
+    MoveItem {
+        /// Which kind of item to move.
+        item_kind: ItemKind,
+        /// Name of the item.
+        item_name: String,
+        /// Workspace-relative path of the source file.
+        from_file: String,
+        /// Workspace-relative path of the destination file.
+        to_file: String,
+        /// If empty, every `.rs` file in the preview input is
+        /// scanned for external references. Otherwise the scan is
+        /// restricted to paths in this list — useful for tests
+        /// and for narrowing the "is referenced elsewhere" check
+        /// to a known sub-tree.
+        #[serde(default)]
+        files: Vec<String>,
+    },
+}
+
+/// Which kind of item [`PatchOp::MoveItem`] is allowed to move. The
+/// 1.24 narrow contract limits this to the four shapes whose
+/// `syn`-driven span analysis is well-defined and that do not
+/// silently drag implementation blocks along (a moved `struct` whose
+/// `impl Foo` block would need to follow is exactly the case the op
+/// refuses — see `crate::move_item`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    Function,
+    Struct,
+    Enum,
+    Union,
 }
 
 /// One `(name, type)` pair for [`PatchOp::ExtractFunction::params`].

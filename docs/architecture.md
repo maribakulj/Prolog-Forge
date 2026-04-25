@@ -5,7 +5,7 @@ Core. Its long-form, opinionated version (mission, design principles, MVP,
 roadmap, risks, etc.) lives in the architecture blueprint; this file tracks
 the *current* implementation state.
 
-## Current state — Phase 1 step 23 (ChangeSignature op)
+## Current state — Phase 1 step 24 (MoveItem op)
 
 The Core is a Rust workspace split into focused crates. Nothing in the list
 below depends on any editor; the entire product is reachable through
@@ -21,7 +21,7 @@ JSON-RPC.
 | `aa-ingest` | Filesystem walker, source-file dispatch. |
 | `aa-lang-rust` | Rust analyzer backed by `syn`, lowers source to `CsmFragment`. |
 | `aa-llm` | Bounded LLM orchestrator: `LlmProvider` trait, `MockProvider`, context selector (trusted layers only, deterministic ordering), prompt builder, content-addressed response cache, identifier-resolution guard. Three LLM modes: `propose` (fact candidates), `refine` (iterative revision with prior rejections + diagnostics), and `propose_patch` (typed `PatchPlan` candidates grounded against the op vocabulary; Phase 1.15 adds an optional memory-aware variant that conditions proposals on past commits via a `patch_propose.v2` prompt). |
-| `aa-patch` | Typed patch planner. Op vocabulary: `RenameFunction` (Phase 1.10), `RenameFunctionTyped` (1.11), `AddDeriveToStruct` (1.12), `RemoveDeriveFromStruct` (1.18), `InlineFunction` (1.21), `ExtractFunction` (1.22), `ChangeSignature` (1.23 — reorder a free-standing fn's params with optional renames; permutation-only, no arity change; refuses shadowing renames, macro-body call sites, qualified-path call sites, and the standard generic/async/const/unsafe/self-taking shapes). `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
+| `aa-patch` | Typed patch planner. Op vocabulary: `RenameFunction` (Phase 1.10), `RenameFunctionTyped` (1.11), `AddDeriveToStruct` (1.12), `RemoveDeriveFromStruct` (1.18), `InlineFunction` (1.21), `ExtractFunction` (1.22), `ChangeSignature` (1.23), `MoveItem` (1.24 — physically move a free-standing top-level item between two workspace files, verbatim with attributes/docstrings/visibility; refuses items in nested mods, generic items, types with attached `impl` blocks, missing destination files, and any external reference that would dangle post-move). `PatchPlan`, pure preview pipeline producing unified diffs via byte-accurate `syn`-driven span edits (comments preserved). |
 | `aa-ra-client` | Minimal LSP client for rust-analyzer: Content-Length framing, `Client` (one-shot spawn / initialize / rename / shutdown), `Session` (persistent tempdir + version-tracked `didChange` sync across calls), in-process mock server for tests. Graceful degradation when RA is absent — the caller receives `ClientError::NotAvailable` and falls back to the syntactic path. |
 | `aa-validate` | Pluggable validation pipeline: `ValidationStage` trait, `Pipeline` with fail-fast semantics, `SyntacticStage` re-parsing every changed `.rs` file with `syn`. Semantic stages (`RuleStage`, `CargoCheckStage`, `CargoTestStage`) live in `aa-core` where the dependencies they need are available. |
 | `aa-explain` | Proof-carrying explainer: composes observed / inferred / candidate evidence, rule activations (head + premises via `aa_rules::trace_derivations`), and validation stage outcomes into a single `Explanation` with a synthesized verdict. Pure; no I/O. |

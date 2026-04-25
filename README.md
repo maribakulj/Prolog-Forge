@@ -16,27 +16,26 @@ and a synthesized verdict.
 Editors, CLIs, CI systems, and autonomous agents are all **thin clients**
 of the same local protocol. The core never imports an editor SDK.
 
-> Status: **Phase 1, step 23** — `ChangeSignature` op:
-> reorder a free-standing function's parameters and
-> optionally rename them, propagating the permutation to
-> every bare call site. Permutation-only: adding or removing
-> params is refused (separate ops for those, future phases).
-> Renames are scope-aware syntactically — refused when the
-> body shadows the old name or already binds the new name.
-> Narrow contract refuses generic / `async` / `const` /
-> `unsafe` / `self`-taking functions, macro-body call
-> sites, qualified-path call sites (`mod::f(...)`), and any
-> non-bare reference that would silently desync. Wire
-> shape: `PatchOp::ChangeSignature { function, new_params,
-> files }` with `ParamReorder { from_index, rename }`,
-> recognised by `patch.preview` / `patch.apply` /
-> `explain.patch` / `llm.propose_patch`. New `aa
-> change-signature --order '1,0' --rename '0=left'` CLI.
-> Journal tracks the `change_signature` op tag (visible
-> via `memory.stats by_op_kind`). 16 unit tests cover the
-> happy paths and the refusal cases; daemon smoke exercises
-> preview → apply → arity-refusal end-to-end. See
-> [Roadmap](#roadmap).
+> Status: **Phase 1, step 24** — `MoveItem` op:
+> physically move a free-standing top-level item (a `fn`,
+> `struct`, `enum`, or `union`) from one workspace file to
+> another, verbatim. Outer attributes, docstrings, and
+> visibility ride along. Narrow contract refuses items in
+> nested modules, generic items, struct/enum/union with an
+> attached `impl` block in the source file, missing
+> destination files (no file creation in 1.24), and any
+> external reference (`use`, qualified path, macro body)
+> that would dangle post-move. Updating those references
+> needs scope-aware rewrites and lives in a follow-up
+> RA-driven phase. Wire shape: `PatchOp::MoveItem {
+> item_kind, item_name, from_file, to_file, files }` with
+> `ItemKind = function | struct | enum | union`. New `aa
+> move-item --kind function --name helper --from src/a.rs
+> --to src/b.rs` CLI. Journal tracks the `move_item` op
+> tag (visible via `memory.stats by_op_kind`). 13 unit
+> tests cover happy path + every refusal; daemon smoke
+> exercises preview → apply → refusal-on-external-ref
+> end-to-end. See [Roadmap](#roadmap).
 
 ---
 
@@ -111,7 +110,7 @@ interface. See [`docs/architecture.md`](docs/architecture.md).
 | [`aa-ingest`](crates/aa-ingest) | Filesystem walker and source dispatch |
 | [`aa-lang-rust`](crates/aa-lang-rust) | Rust analyzer (syn-based) emitting CSM fragments |
 | [`aa-llm`](crates/aa-llm) | Bounded LLM orchestrator: provider trait, mock provider, trusted-only context, schema-validated I/O, response cache, anti-hallucination guard, one-shot `propose` + iterative `refine` loop |
-| [`aa-patch`](crates/aa-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate `syn`-driven span edits. Op vocabulary: `RenameFunction` (Phase 1.10), `RenameFunctionTyped` (1.11), `AddDeriveToStruct` (1.12), `RemoveDeriveFromStruct` (1.18), `InlineFunction` (1.21), `ExtractFunction` (1.22), `ChangeSignature` (1.23) |
+| [`aa-patch`](crates/aa-patch) | Typed patch ops, `PatchPlan`, pure preview pipeline with byte-accurate `syn`-driven span edits. Op vocabulary: `RenameFunction` (Phase 1.10), `RenameFunctionTyped` (1.11), `AddDeriveToStruct` (1.12), `RemoveDeriveFromStruct` (1.18), `InlineFunction` (1.21), `ExtractFunction` (1.22), `ChangeSignature` (1.23), `MoveItem` (1.24) |
 | [`aa-ra-client`](crates/aa-ra-client) | Minimal LSP client for `rust-analyzer`: Content-Length framing, `Client` (one-shot) + `Session` (persistent tempdir + versioned `didChange` sync), in-process mock server for tests. Powers Step 2 scope-resolved rename + the Phase 1.13 session pool. |
 | [`aa-validate`](crates/aa-validate) | Pluggable validation pipeline: `ValidationStage` trait, `SyntacticStage`, fail-fast `Pipeline`. Semantic stages (`RuleStage`, `CargoCheckStage`) live in `aa-core`. |
 | [`aa-explain`](crates/aa-explain) | Proof-carrying explainer: composes observed / inferred / candidate evidence + rule activations + validation stages into a single `Explanation` with a synthesized verdict |
@@ -501,7 +500,8 @@ touching any Phase 0 artifact beyond the API enum.
 | **1.21** | `PatchOp::InlineFunction` — first op that *deletes* code as well as rewriting it. Substitutes every bare call site `f(a1, a2)` with `({ let p1 = a1; let p2 = a2; <body_inner> })` (paren-wrap defeats the statement-disambiguation rule `{…} + 1 → {…}; +1`), then removes the fn definition. Narrow contract refuses recursion, `return`, `async`/`const`/`unsafe`, generics, `self`, macro-body call sites, and any non-bare reference in scope. `aa inline-function` CLI subcommand. MockProvider validator + `explain.patch` anchors wired; `memory.stats by_op_kind.inline_function` tracked. Shared span-arithmetic helpers extracted to `aa-patch::util`. | **shipped** |
 | **1.22** | `PatchOp::ExtractFunction` — dual of 1.21. Lift a contiguous run of stmts out of a free-standing fn body into a new helper; replace the original site with a call. Selection by 1-indexed inclusive line range; helper params listed explicitly as `(name, type)` pairs (no type inference — that's a later-phase RA job). Refuses `return`/`break`/`continue`/`?`/`await`/`yield`, macro invocations, partial-statement selections, selections ending on the parent's tail expression, and `async`/`const`/`unsafe`/generic/`self`-taking parents. `aa extract-function` CLI subcommand. `memory.stats by_op_kind.extract_function` tracked. | **shipped** |
 | **1.23** | `PatchOp::ChangeSignature` — reorder a free-standing function's parameters, optionally renaming them, and propagate the permutation to every bare call site. Permutation-only: arity changes refused (additions/removals get separate ops in later phases). Renames are syn-driven and refuse to proceed when the body would shadow the old name or already binds the new name. Same refusal posture as Inline/Extract for shape (no generics / `async` / `const` / `unsafe` / `self`), call sites (no macro-body, no qualified path), and non-bare references that would silently desync. `aa change-signature --order '1,0' --rename '0=left'` CLI. `memory.stats by_op_kind.change_signature` tracked. | **shipped** |
-| 1.24 (MVP rest) | More editing ops (move-item, add/remove param), multi-language analyzers (TS / Python), dedicated `llm.refine` UI (multi-round dialogue) | 2–3 months |
+| **1.24** | `PatchOp::MoveItem` — physically move a free-standing top-level item (`fn` / `struct` / `enum` / `union`) between two workspace files, verbatim. Attributes, docstrings, and visibility ride along. Refuses items in nested `mod`s, generic items, struct/enum/union with attached `impl` blocks, missing destination files, and any external reference (`use`, qualified path, macro body) that would dangle post-move. The 1.24 contract is "the move is mechanically correct or refuse"; updating refs scope-aware lives in a later RA-driven op. `aa move-item --kind function --name helper --from src/a.rs --to src/b.rs` CLI. `memory.stats by_op_kind.move_item` tracked. | **shipped** |
+| 1.25 (MVP rest) | Network LLM providers (Anthropic, DeepSeek + Kimi via OpenAI-compat, Gemini), Lisp analyzers (Clojure / Emacs Lisp / Common Lisp via tree-sitter), more editing ops (add/remove param, scope-aware ref updates for MoveItem) | 2–3 months |
 | 2 | Multi-language (TS, Python), property-based validation, Emacs/Neovim, web explainer UI (renders `explain.patch` output) | 5–8 months |
 | 3 | Pattern mining, rule marketplace, provenance export, candidate → validated workflow | 8–12 months |
 | 4 | Agent mode, ML-assisted validation, cross-machine incrementality, gRPC transport | 12–18 months |

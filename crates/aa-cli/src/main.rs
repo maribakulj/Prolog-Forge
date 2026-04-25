@@ -325,6 +325,31 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Phase 1.24 — physically move a free-standing top-level item
+    /// (a `fn`, `struct`, `enum`, or `union`) from one workspace file
+    /// to another. The destination file must already exist; updating
+    /// `use` statements and qualified-path references is out of scope
+    /// for 1.24 and the op refuses rather than perform a partial
+    /// rewrite.
+    MoveItem {
+        /// Workspace root.
+        root: PathBuf,
+        /// Kind of item: `function`, `struct`, `enum`, or `union`.
+        #[arg(long = "kind")]
+        item_kind: String,
+        /// Name of the item.
+        #[arg(long = "name")]
+        item_name: String,
+        /// Workspace-relative source file path.
+        #[arg(long = "from")]
+        from_file: String,
+        /// Workspace-relative destination file path.
+        #[arg(long = "to")]
+        to_file: String,
+        /// Actually write the patch to disk after validation.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Produce a proof-carrying explanation for a rename plan: which
     /// observed facts are cited, which rules fire on the shadow graph,
     /// which candidates were considered, which validation stages ran, and
@@ -414,6 +439,14 @@ fn main() -> Result<()> {
             rename,
             apply,
         } => cmd_change_signature(root, function, order, rename, apply),
+        Cmd::MoveItem {
+            root,
+            item_kind,
+            item_name,
+            from_file,
+            to_file,
+            apply,
+        } => cmd_move_item(root, item_kind, item_name, from_file, to_file, apply),
         Cmd::Explain {
             root,
             from,
@@ -1388,6 +1421,103 @@ fn cmd_change_signature(
     let plan = PatchPlanDto {
         ops: vec![op],
         label: format!("change-signature {function} order={order_csv}"),
+    };
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_PREVIEW,
+        serde_json::to_value(PatchPreviewParams {
+            workspace_id: ws.clone(),
+            plan: plan.clone(),
+        })?,
+    )?;
+    let preview: PatchPreviewResult = serde_json::from_value(resp)?;
+    println!(
+        "preview: {} byte-level edit(s) across {} file(s)",
+        preview.total_replacements,
+        preview.files.len()
+    );
+    for e in &preview.errors {
+        eprintln!("  error in {}: {}", e.file, e.message);
+    }
+    for f in &preview.files {
+        println!(
+            "\n# {} ({} bytes -> {} bytes, {} edit(s))",
+            f.path, f.before_len, f.after_len, f.replacements
+        );
+        println!("{}", f.diff);
+    }
+
+    if !apply {
+        return Ok(());
+    }
+    if !preview.errors.is_empty() {
+        println!("refusing to apply: preview reported errors");
+        std::process::exit(2);
+    }
+
+    let resp = call(
+        &core,
+        METHOD_PATCH_APPLY,
+        serde_json::to_value(PatchApplyParams {
+            workspace_id: ws,
+            plan,
+            validation_profile: None,
+        })?,
+    )?;
+    let result: PatchApplyResult = serde_json::from_value(resp)?;
+    println!();
+    if result.applied {
+        println!(
+            "applied: commit {} ({} file(s), {} bytes)",
+            result.commit_id.as_deref().unwrap_or("-"),
+            result.files_written,
+            result.bytes_written
+        );
+    } else {
+        println!(
+            "rejected: {}",
+            result.rejection_reason.as_deref().unwrap_or("unknown")
+        );
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn cmd_move_item(
+    root: PathBuf,
+    item_kind: String,
+    item_name: String,
+    from_file: String,
+    to_file: String,
+    apply: bool,
+) -> Result<()> {
+    if !matches!(item_kind.as_str(), "function" | "struct" | "enum" | "union") {
+        anyhow::bail!(
+            "--kind must be one of `function`, `struct`, `enum`, `union` (got `{item_kind}`)"
+        );
+    }
+    let core = Core::new();
+    let resp = call(
+        &core,
+        METHOD_WORKSPACE_OPEN,
+        serde_json::to_value(WorkspaceOpenParams {
+            root: root.display().to_string(),
+        })?,
+    )?;
+    let ws = serde_json::from_value::<WorkspaceOpenResult>(resp)?.workspace_id;
+
+    let op = serde_json::json!({
+        "op": "move_item",
+        "item_kind": item_kind,
+        "item_name": item_name,
+        "from_file": from_file,
+        "to_file": to_file,
+        "files": [],
+    });
+    let plan = PatchPlanDto {
+        ops: vec![op],
+        label: format!("move {item_kind} {item_name} from {from_file} to {to_file}"),
     };
 
     let resp = call(

@@ -380,6 +380,36 @@ fn apply_op(
                 }),
             }
         }
+        PatchOp::MoveItem {
+            item_kind,
+            item_name,
+            from_file,
+            to_file,
+            files,
+        } => {
+            // Cross-file op: the transform reads `from_file` to locate
+            // the item, scans the workspace for external references
+            // (refusing if any exist), then rewrites both `from_file`
+            // (item removed) and `to_file` (item appended). The
+            // planner itself doesn't need to load the destination —
+            // the transform reads it from the `working` map.
+            match crate::move_item::move_item(
+                working, *item_kind, item_name, from_file, to_file, files,
+            ) {
+                Ok((new_files, per_file)) => {
+                    for (path, new_src) in new_files {
+                        working.insert(path, new_src);
+                    }
+                    for (path, n) in per_file {
+                        *replacements.entry(path).or_insert(0) += n;
+                    }
+                }
+                Err(msg) => errors.push(PreviewError {
+                    file: from_file.clone(),
+                    message: msg,
+                }),
+            }
+        }
     }
 }
 
