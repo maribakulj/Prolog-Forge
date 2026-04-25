@@ -48,12 +48,67 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
-/// The shape `textDocument/rename` returns. rust-analyzer populates `changes`;
-/// `documentChanges` is the newer form but is not required for rename.
+/// LSP envelope for a `WorkspaceEdit`. Servers populate either
+/// `changes` (legacy form) or `documentChanges` (newer, preferred
+/// form) depending on what the client advertised in `initialize`. We
+/// declare `documentChanges: false` but rust-analyzer 1.95+ ignores
+/// that capability and always returns `documentChanges` from
+/// `textDocument/rename` — see `Self::flatten` for the unified view
+/// every consumer should use.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceEdit {
     #[serde(default)]
     pub changes: HashMap<DocumentUri, Vec<TextEdit>>,
+    /// Newer form. Each entry carries its own document identifier
+    /// plus the edits to apply to it. We accept both `TextDocumentEdit`
+    /// objects *and* the file-op variants (`CreateFile`/`RenameFile`/
+    /// `DeleteFile`) by deserialising as raw `Value`s; only the
+    /// document-edit variant carries `edits`, so [`Self::flatten`]
+    /// silently drops the others — they don't apply to a rename.
+    #[serde(default, rename = "documentChanges")]
+    pub document_changes: Vec<serde_json::Value>,
+}
+
+impl WorkspaceEdit {
+    /// Collapse `changes` and `documentChanges` into a single
+    /// `(uri -> edits)` map, the shape every downstream consumer
+    /// (`aa-patch::typed_rename`) actually needs. Entries from
+    /// `documentChanges` are merged into the corresponding `changes`
+    /// bucket; non-edit file ops (`CreateFile`/`RenameFile`/
+    /// `DeleteFile`) are dropped because rename plans don't need
+    /// them.
+    pub fn flatten(&self) -> HashMap<DocumentUri, Vec<TextEdit>> {
+        let mut out: HashMap<DocumentUri, Vec<TextEdit>> = self.changes.clone();
+        for raw in &self.document_changes {
+            // Only TextDocumentEdit carries `edits`. The file-op
+            // variants have a `kind` field set to `"create" |
+            // "rename" | "delete"` instead — skip them.
+            if raw.get("kind").is_some() {
+                continue;
+            }
+            let Some(uri_str) = raw
+                .get("textDocument")
+                .and_then(|td| td.get("uri"))
+                .and_then(|u| u.as_str())
+            else {
+                continue;
+            };
+            let Some(arr) = raw.get("edits").and_then(|e| e.as_array()) else {
+                continue;
+            };
+            let edits: Vec<TextEdit> = arr
+                .iter()
+                .filter_map(|v| serde_json::from_value::<TextEdit>(v.clone()).ok())
+                .collect();
+            if edits.is_empty() {
+                continue;
+            }
+            out.entry(DocumentUri(uri_str.to_string()))
+                .or_default()
+                .extend(edits);
+        }
+        out
+    }
 }
 
 // ---- Request/response envelopes ------------------------------------------

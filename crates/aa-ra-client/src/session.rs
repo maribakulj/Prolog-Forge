@@ -187,7 +187,6 @@ mod tests {
     use super::*;
     use crate::mock::MockServer;
     use crate::types::{Position, Range, TextEdit};
-    use std::collections::HashMap;
 
     fn mock_session_pair(
         rename_edits: WorkspaceEdit,
@@ -217,9 +216,7 @@ mod tests {
 
     #[test]
     fn sync_opens_then_changes_across_calls() {
-        let edits = WorkspaceEdit {
-            changes: HashMap::new(),
-        };
+        let edits = WorkspaceEdit::default();
         let (root, mut session, _h) = mock_session_pair(edits);
 
         let mut files = BTreeMap::new();
@@ -243,9 +240,7 @@ mod tests {
 
     #[test]
     fn rename_returns_mock_workspace_edit() {
-        let mut edits = WorkspaceEdit {
-            changes: HashMap::new(),
-        };
+        let mut edits = WorkspaceEdit::default();
         let tmp_root = std::env::temp_dir().join("aa-session-test-root");
         let _ = fs::create_dir_all(&tmp_root);
         edits.changes.insert(

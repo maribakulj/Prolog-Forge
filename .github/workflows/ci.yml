@@ -12,8 +12,20 @@ env:
 
 jobs:
   build-and-test:
-    name: build + test
-    runs-on: ubuntu-latest
+    name: build + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # `fail-fast: false` so a flaky run on one OS doesn't kill the
+      # other — both data points are useful when triaging.
+      fail-fast: false
+      matrix:
+        # macOS runners are billed 10× linux on private repos but
+        # *free* on public repos. AYE-AYE is public so the cost is
+        # zero. Windows is intentionally out for now: `aa-ra-client`
+        # and `aa-core::apply` use POSIX-y fork+exec/atomic-rename
+        # patterns that need Windows-specific code paths to land
+        # before we add them here.
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +46,12 @@ jobs:
       # ~3 min to ~45 s on this workspace.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: aye-aye-${{ hashFiles('rust-toolchain.toml') }}
+          # Include the OS in the key so ubuntu and macos caches
+          # don't clobber each other (they have incompatible
+          # binary blobs). `Swatinem/rust-cache` already partitions
+          # by `runner.os` internally but being explicit here makes
+          # the cache hit-rate easier to read in CI logs.
+          shared-key: aye-aye-${{ matrix.os }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -57,6 +74,40 @@ jobs:
         run: |
           set -euo pipefail
           python3 tooling/smoke/daemon_smoke.py
+
+  coverage:
+    name: code coverage (cargo-llvm-cov + Codecov)
+    runs-on: ubuntu-latest
+    # Linux-only — running coverage on every OS in the matrix would
+    # triple the cost without adding signal (the same code is
+    # exercised). Codecov accepts anonymous uploads from public
+    # repos, so no `CODECOV_TOKEN` secret is required.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup show
+          rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aye-aye-coverage-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install cargo-llvm-cov
+        # Pinned for the same reason cargo-audit is — keeps the
+        # coverage delta deterministic across runs.
+        run: cargo install --locked --version 0.6.21 cargo-llvm-cov
+      - name: Generate coverage report
+        # `--workspace` covers every member crate; `--lcov` emits
+        # the format Codecov ingests natively. The doctest-coverage
+        # toggle is off because most crates declare 0 doctests
+        # today — flipping it on later is a one-flag change.
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          # Anonymous upload (public repo). Switch `token` in if the
+          # repo ever goes private.
+          fail_ci_if_error: false
 
   audit:
     name: cargo audit (CVE scan)
@@ -127,6 +178,32 @@ jobs:
           shared-key: aye-aye-msrv-1.85.0
       - name: Build on MSRV
         run: cargo +1.85.0 build --workspace --all-targets
+
+  rust-analyzer-e2e:
+    name: rust-analyzer e2e (real binary)
+    runs-on: ubuntu-latest
+    # Closes the gap noted in docs/architecture.md: aa-ra-client's
+    # real-binary test self-skips on hosts where `rust-analyzer` is
+    # absent, which historically meant CI was running the in-process
+    # mock only. We install the official `rust-analyzer` rustup
+    # component, set `AA_REQUIRE_REAL_RA=1` so the test panics
+    # rather than skips on unexpected absence, and run only the one
+    # test that needs it. Linux-only — installing RA on macOS would
+    # double the cost without adding signal.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain + rust-analyzer
+        run: |
+          rustup show active-toolchain || rustup show
+          rustup component add rust-analyzer
+          rust-analyzer --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aye-aye-ra-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Run aa-ra-client real-binary test
+        env:
+          AA_REQUIRE_REAL_RA: "1"
+        run: cargo test -p aa-ra-client real_rust_analyzer_rename_when_available -- --nocapture
 
   vscode-adapter:
     name: VS Code adapter (syntax check)
