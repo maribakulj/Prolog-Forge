@@ -128,7 +128,7 @@ slot on top of this loop in the following steps.
 - Behavioral stage (run impacted tests).
 - Content-addressed journal (current format is plain JSON and stores full before/after bytes per file — fine at MVP scale, compressed CAS coming with the disk-backed `aa-persist`).
 - Cross-commit rollback (Phase 1.5 rollback is single-commit; a redo/undo stack arrives later).
-- **Rust-analyzer in CI.** The `aa-ra-client` crate is end-to-end tested against the real `rust-analyzer` binary only when one is on `PATH` (the test self-skips otherwise). The CI host used while Phase 1.11 was shipped does not carry RA, so the typed-rename path is CI-verified through the in-process mock only; the real-binary round-trip is exercised locally. Persistent RA indexing (keep one session alive across requests) is a Phase 2 follow-up — today each typed rename spawns a fresh RA.
+- ~~**Rust-analyzer in CI.**~~ Closed in PR-B: a dedicated `rust-analyzer-e2e` job installs the official `rust-analyzer` rustup component and runs the real-binary test under `AA_REQUIRE_REAL_RA=1`, so the env var turns the test's "RA absent → skip" into a hard panic. The typed-rename path is now CI-verified against both the in-process mock *and* the real binary on every push. Persistent RA indexing (keep one session alive across requests) is a Phase 2 follow-up — today each typed rename spawns a fresh RA.
 - Patch planning / application (minimal).
 - Persistence to disk.
 - Notifications / streaming / cancellation.

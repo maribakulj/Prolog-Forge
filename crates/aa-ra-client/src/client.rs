@@ -461,18 +461,27 @@ mod tests {
     #[test]
     fn real_rust_analyzer_rename_when_available() {
         // This test shells out to the real `rust-analyzer` binary if one
-        // is on PATH. We run it as part of the normal test suite
-        // because it self-skips when the tool is missing — no ignored
-        // attribute, no manual invocation required. On CI hosts without
-        // rust-analyzer this is a no-op.
-        if std::process::Command::new("rust-analyzer")
+        // is on PATH. By default it self-skips when the tool is missing
+        // — useful on dev hosts that don't carry RA. The dedicated
+        // `rust-analyzer-e2e` CI job sets `AA_REQUIRE_REAL_RA=1` to
+        // turn the skip into a hard failure: that's how we close the
+        // "RA tested only via in-process mock" gap noted in
+        // docs/architecture.md.
+        let ra_available = std::process::Command::new("rust-analyzer")
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| !s.success())
-            .unwrap_or(true)
-        {
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ra_available {
+            if std::env::var("AA_REQUIRE_REAL_RA").is_ok() {
+                panic!(
+                    "AA_REQUIRE_REAL_RA is set but rust-analyzer is not on PATH; \
+                     install it before running this test (CI installs it via \
+                     `rustup component add rust-analyzer`)"
+                );
+            }
             eprintln!("rust-analyzer not available; skipping real-binary test");
             return;
         }
