@@ -543,6 +543,27 @@ and are added alongside their phase.
 
 ---
 
+## Releases
+
+Pre-built binaries (`aa` + `aa-daemon`) and the VS Code `.vsix` are
+published to [GitHub Releases](https://github.com/maribakulj/AYE-AYE/releases)
+on every annotated `v*` tag. Targets: `x86_64-linux-gnu`,
+`aarch64-linux-gnu`, `x86_64-darwin`, `aarch64-darwin`. Each release
+ships `SHA256SUMS` for verification.
+
+Quick install (linux x86_64):
+
+```bash
+curl -L https://github.com/maribakulj/AYE-AYE/releases/latest/download/aa-x86_64-unknown-linux-gnu.tar.gz \
+  | tar -xz
+./aa-x86_64-unknown-linux-gnu/aa --version
+```
+
+Cutting a release is documented in
+[`docs/RELEASING.md`](docs/RELEASING.md).
+
+---
+
 ## Contributing
 
 This is a research-grade codebase aiming at production-grade foundations.

@@ -104,3 +104,6 @@ if [ "${1:-}" = "--full" ]; then
 fi
 
 printf "\n%s✓ preflight clean — safe to push%s\n" "$C_OK" "$C_OFF"
+printf "%sNote:%s the release pipeline (.github/workflows/release.yml) is\n" "$C_DIM" "$C_OFF"
+printf "      triggered by annotated tags, not by 'push' — see\n"
+printf "      docs/RELEASING.md for the cut procedure.\n"
