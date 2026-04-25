@@ -553,17 +553,29 @@ be challenged hard in review:
 2. the **graph schema** (predicates + layer semantics),
 3. the **protocol** (methods, param shapes, error codes).
 
-Everything else is substitutable. Before opening a PR:
+Everything else is substitutable. Before opening a PR, run the
+preflight script — it's a bit-for-bit local mirror of
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)'s blocking
+jobs and is the single source of truth for "what CI checks":
 
 ```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-python3 tooling/smoke/daemon_smoke.py
+tooling/preflight.sh           # mandatory checks (mirrors `build-and-test`)
+tooling/preflight.sh --full    # additionally: audit, deny, MSRV, RA e2e
 ```
 
+Mandatory checks: `cargo fmt --check`, `cargo clippy -D warnings`,
+`cargo build`, `cargo test`, JSON schema parse, daemon smoke,
+VS Code adapter syntax-check. The `--full` mode adds the
+supplementary CI jobs (`cargo audit`, `cargo deny`, MSRV build on
+Rust 1.85, and the rust-analyzer e2e test) and self-skips the
+ones whose binaries are absent on the host with a clear message.
+
+Any time CI grows a new step, mirror it in `tooling/preflight.sh`
+in the same PR. The contract is "anything not in `preflight.sh`
+is not on the merge gate."
+
 Issues and PRs are welcome on
-[GitHub](https://github.com/maribakulj/prolog-forge).
+[GitHub](https://github.com/maribakulj/AYE-AYE).
 
 ---
 
