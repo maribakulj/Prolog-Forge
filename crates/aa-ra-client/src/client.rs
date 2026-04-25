@@ -659,10 +659,7 @@ mod tests {
                 let parsed: serde_json::Value =
                     serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
                 let code = parsed.get("code").and_then(|v| v.as_i64());
-                let message = parsed
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let message = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
                 match code {
                     // -32602 InvalidParams. RA uses this for "no
                     // references at the requested position", which
