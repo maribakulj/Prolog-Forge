@@ -984,6 +984,7 @@ fn op_tag(op: &aa_patch::PatchOp) -> String {
         aa_patch::PatchOp::InlineFunction { .. } => "inline_function".into(),
         aa_patch::PatchOp::ExtractFunction { .. } => "extract_function".into(),
         aa_patch::PatchOp::ChangeSignature { .. } => "change_signature".into(),
+        aa_patch::PatchOp::MoveItem { .. } => "move_item".into(),
     }
 }
 
@@ -1065,6 +1066,13 @@ fn anchors_from_ops(ops: &[aa_patch::PatchOp]) -> Vec<String> {
                         out.push(new_name.clone());
                     }
                 }
+            }
+            aa_patch::PatchOp::MoveItem { item_name, .. } => {
+                // The item being moved is the only anchor that
+                // survives the operation. Source/dest paths are not
+                // anchors — they're routing metadata that the
+                // explainer doesn't need to surface.
+                out.push(item_name.clone());
             }
         }
     }

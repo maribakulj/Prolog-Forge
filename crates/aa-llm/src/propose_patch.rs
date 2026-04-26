@@ -540,12 +540,70 @@ fn validate_plan(
                     }
                 }
             }
+            "move_item" => {
+                // Phase 1.24. Op-shape only: confirm `item_kind` is
+                // a known variant, the names are non-empty, and the
+                // file paths are non-empty. Whether the item exists
+                // in `from_file`, whether external refs would
+                // dangle, and so on are checked by the patch
+                // planner at preview time.
+                let item_kind = raw
+                    .get("item_kind")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!("op[{idx}] move_item missing `item_kind` string"))?;
+                if !matches!(item_kind, "function" | "struct" | "enum" | "union") {
+                    return Err(format!(
+                        "op[{idx}] move_item: unknown item_kind `{item_kind}` \
+                         (known: function, struct, enum, union)"
+                    ));
+                }
+                let item_name = raw
+                    .get("item_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!("op[{idx}] move_item missing `item_name` string"))?;
+                if item_name.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] move_item: `item_name` must be non-empty"
+                    ));
+                }
+                // Hallucination guard for the function variant only:
+                // we have observed `function/2` facts in the graph
+                // for free-standing fns. `struct_def/2` etc. cover
+                // the other kinds.
+                let in_graph = match item_kind {
+                    "function" => known_function_names.contains(item_name),
+                    _ => known_type_names.contains(item_name),
+                };
+                if !in_graph {
+                    return Err(format!(
+                        "op[{idx}] move_item: unknown {item_kind} `{item_name}` (hallucination)"
+                    ));
+                }
+                let from_file = raw
+                    .get("from_file")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!("op[{idx}] move_item missing `from_file` string"))?;
+                let to_file = raw
+                    .get("to_file")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!("op[{idx}] move_item missing `to_file` string"))?;
+                if from_file.is_empty() || to_file.is_empty() {
+                    return Err(format!(
+                        "op[{idx}] move_item: `from_file` and `to_file` must be non-empty"
+                    ));
+                }
+                if from_file == to_file {
+                    return Err(format!(
+                        "op[{idx}] move_item: `from_file` and `to_file` are the same file"
+                    ));
+                }
+            }
             other => {
                 return Err(format!(
                     "op[{idx}] unknown op tag `{other}` (known: rename_function, \
                      rename_function_typed, add_derive_to_struct, \
                      remove_derive_from_struct, inline_function, extract_function, \
-                     change_signature)"
+                     change_signature, move_item)"
                 ));
             }
         }

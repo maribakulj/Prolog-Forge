@@ -20,13 +20,14 @@ pub mod add_derive;
 pub mod change_sig;
 pub mod extract;
 pub mod inline;
+pub mod move_item;
 pub mod ops;
 pub mod plan;
 pub mod rust_rename;
 pub mod typed_rename;
 pub(crate) mod util;
 
-pub use ops::{ExtractParam, ParamReorder, PatchOp, PatchPlan};
+pub use ops::{ExtractParam, ItemKind, ParamReorder, PatchOp, PatchPlan};
 pub use plan::{
     apply_plan, apply_plan_with_resolver, preview, preview_with_resolver, FilePatch, PatchError,
     PatchPreview,
