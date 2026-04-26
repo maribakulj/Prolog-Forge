@@ -147,19 +147,30 @@ fn new_commit_id() -> String {
 mod tests {
     use super::*;
 
-    fn tmpdir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "aa-apply-{}-{}",
-            std::process::id(),
-            new_commit_id()
-        ));
-        fs::create_dir_all(&p).unwrap();
-        p
+    /// Each test gets its own [`tempfile::TempDir`] so two parallel
+    /// tests in the same `cargo test` process can never share a path.
+    /// The previous hand-rolled `tmpdir()` combined `process::id()`
+    /// with `SystemTime` nanos — fine on Linux where the nanosecond
+    /// clock has the resolution we expected, but on macOS the
+    /// monotonic clock is only microsecond-grained, so two tests
+    /// scheduled in the same microsecond produced the same path. The
+    /// failure mode was `preflight_fails_on_external_change` writing
+    /// `"drifted"` into a file that `happy_path_writes_atomically`
+    /// then read during its own preflight, surfacing as a
+    /// `Preflight("workspace changed since preview: src/a.rs")`.
+    /// `tempfile::TempDir::new()` fixes the root cause: paths are
+    /// derived from getrandom(2)-quality entropy, not from a clock.
+    fn fresh_workspace() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("aa-apply-test-")
+            .tempdir()
+            .expect("create temp workspace dir")
     }
 
     #[test]
     fn happy_path_writes_atomically() {
-        let root = tmpdir();
+        let tmp = fresh_workspace();
+        let root = tmp.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/a.rs"), "fn a(){}").unwrap();
         fs::write(root.join("src/b.rs"), "fn b(){}").unwrap();
@@ -172,7 +183,7 @@ mod tests {
         shadow.insert("src/a.rs".into(), "fn a2(){}".into());
         shadow.insert("src/b.rs".into(), "fn b2(){}".into());
 
-        let out = apply_transactional(&root, &shadow, &original).unwrap();
+        let out = apply_transactional(root, &shadow, &original).unwrap();
         assert_eq!(out.files_written, 2);
         assert_eq!(
             fs::read_to_string(root.join("src/a.rs")).unwrap(),
@@ -186,7 +197,8 @@ mod tests {
 
     #[test]
     fn preflight_fails_on_external_change() {
-        let root = tmpdir();
+        let tmp = fresh_workspace();
+        let root = tmp.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/a.rs"), "drifted").unwrap();
 
@@ -195,7 +207,7 @@ mod tests {
         let mut shadow = BTreeMap::new();
         shadow.insert("src/a.rs".into(), "fn a2(){}".into());
 
-        let err = apply_transactional(&root, &shadow, &original).unwrap_err();
+        let err = apply_transactional(root, &shadow, &original).unwrap_err();
         assert!(matches!(err, ApplyError::Preflight(_)));
         // File on disk must be untouched.
         assert_eq!(
